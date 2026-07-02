@@ -88,6 +88,11 @@ func cellColor(m *Map, x, y int, colorNoise *valueNoise, palette RenderPalette) 
 		return shade(palette.Cover.Bush, int(cover.Level()))
 	}
 
+	if base.Soil() == world.SoilSand {
+		n := colorNoise.octaveNoise2D(float64(x)*0.11+7, float64(y)*0.11+13, 3, 0.52)
+		return shade(palette.Terrain.Sand, int(math.Round((n-0.5)*16)))
+	}
+
 	colors := biomeColors(palette, base.Biome())
 	n := colorNoise.octaveNoise2D(float64(x)*0.09, float64(y)*0.09, 3, 0.5)
 	colorIndex := min(len(colors)-1, int(math.Floor(n*float64(len(colors)))))

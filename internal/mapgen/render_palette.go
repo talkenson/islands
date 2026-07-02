@@ -25,6 +25,7 @@ type WaterPalette struct {
 type TerrainPalette struct {
 	Rock          color.RGBA
 	CoastalRock   color.RGBA
+	Sand          color.RGBA
 	MountainLight color.RGBA
 	MountainDark  color.RGBA
 }
@@ -49,6 +50,7 @@ var DefaultRenderPalette = RenderPalette{
 	Terrain: TerrainPalette{
 		Rock:          hexColor("#777b74"),
 		CoastalRock:   hexColor("#8b8879"),
+		Sand:          hexColor("#d6bd75"),
 		MountainLight: hexColor("#a6aaa2"),
 		MountainDark:  hexColor("#6e736d"),
 	},
@@ -61,10 +63,10 @@ var DefaultRenderPalette = RenderPalette{
 	},
 	Biomes: map[world.Biome][]color.RGBA{
 		world.BiomeSteppe: {
-			hexColor("#cfae5a"),
-			hexColor("#d8bd73"),
-			hexColor("#e1c77f"),
-			hexColor("#bea05a"),
+			hexColor("#8f9f52"),
+			hexColor("#a6b866"),
+			hexColor("#b8c878"),
+			hexColor("#7f8f48"),
 		},
 		world.BiomeMarsh: {
 			hexColor("#4f735f"),

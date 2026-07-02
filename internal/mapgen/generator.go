@@ -342,8 +342,11 @@ func getEdgeFalloff(x, y float64, config Config) float64 {
 }
 
 func chooseBiome(moisture, temperature float64) (world.Biome, world.Soil) {
-	if moisture < 0.46 && temperature > 0.35 {
+	if moisture < 0.34 && temperature > 0.35 {
 		return world.BiomeSteppe, world.SoilSand
+	}
+	if moisture < 0.54 && temperature > 0.3 {
+		return world.BiomeSteppe, world.SoilGrass
 	}
 	if moisture > 0.6 && temperature < 0.68 {
 		return world.BiomeMarsh, world.SoilMarsh

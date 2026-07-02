@@ -94,7 +94,7 @@ func DefaultConfig() Config {
 		RiverMaxWidth:        6,
 
 		RockScale:         0.035,
-		RockThreshold:     0.68,
+		RockThreshold:     0.8,
 		RockyBeachChance:  0.38,
 		MountainHeight:    0.72,
 		MountainScale:     0.018,
