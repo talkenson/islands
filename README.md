@@ -60,6 +60,29 @@ land=12074 water=53462 shallow=1813 river=919 forest=1431 dry_bush=163 rock=677 
 saved render: artifacts/generated/world.png
 ```
 
+## Run The Backend
+
+Generate an exported map first:
+
+```bash
+GOCACHE=/home/talk/work/islands/.gocache go run ./cmd/mapbuilder \
+  -out artifacts/generated \
+  -width 256 \
+  -height 256 \
+  -workers 4 \
+  -export-map
+```
+
+Then start the API server with that map:
+
+```bash
+GOCACHE=/home/talk/work/islands/.gocache go run ./cmd/islands \
+  -world-map artifacts/generated/world.islmap \
+  -visible-chunk-radius 1
+```
+
+Use `-visible-chunk-radius 2` for a `5x5` live chunk window. If `-world-map` is omitted, the server starts with a small in-memory demo world.
+
 ## Tests
 
 Run tests with a local Go build cache:
