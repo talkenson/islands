@@ -29,6 +29,9 @@ func TestSaveLoadBinaryRoundTrip(t *testing.T) {
 	if loaded.Width != generated.Width || loaded.Height != generated.Height {
 		t.Fatalf("size: got %dx%d, want %dx%d", loaded.Width, loaded.Height, generated.Width, generated.Height)
 	}
+	if loaded.Config.Seed != generated.Config.Seed {
+		t.Fatalf("seed: got %q, want %q", loaded.Config.Seed, generated.Config.Seed)
+	}
 	if len(loaded.Chunks) != len(generated.Chunks) {
 		t.Fatalf("chunks: got %d, want %d", len(loaded.Chunks), len(generated.Chunks))
 	}

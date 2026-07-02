@@ -33,6 +33,7 @@ func main() {
 		if err := gameService.LoadChunks(1, loaded.Chunks); err != nil {
 			log.Fatal(err)
 		}
+		gameService.SetWorldRenderSeed(1, loaded.Config.Seed)
 		gameService.SeedDemoActor(1)
 		fmt.Printf("loaded world map %s: %dx%d cells, %d chunks\n", *worldMap, loaded.Width, loaded.Height, len(loaded.Chunks))
 	} else {

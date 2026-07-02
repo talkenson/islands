@@ -24,6 +24,13 @@ func SaveBinary(w io.Writer, m *Map) error {
 	if err := binary.Write(w, binary.LittleEndian, uint32(world.ChunkSize)); err != nil {
 		return err
 	}
+	seed := []byte(m.Config.Seed)
+	if err := binary.Write(w, binary.LittleEndian, uint32(len(seed))); err != nil {
+		return err
+	}
+	if _, err := w.Write(seed); err != nil {
+		return err
+	}
 
 	coords := make([]world.ChunkCoord, 0, len(m.Chunks))
 	for coord := range m.Chunks {
@@ -84,6 +91,7 @@ func LoadBinary(r io.Reader) (*Map, error) {
 	var height uint32
 	var chunkSize uint32
 	var chunkCount uint32
+	config := Config{}
 	if err := binary.Read(r, binary.LittleEndian, &width); err != nil {
 		return nil, err
 	}
@@ -96,6 +104,15 @@ func LoadBinary(r io.Reader) (*Map, error) {
 	if chunkSize != world.ChunkSize {
 		return nil, fmt.Errorf("unsupported chunk size %d", chunkSize)
 	}
+	var seedLen uint32
+	if err := binary.Read(r, binary.LittleEndian, &seedLen); err != nil {
+		return nil, err
+	}
+	seed := make([]byte, seedLen)
+	if _, err := io.ReadFull(r, seed); err != nil {
+		return nil, err
+	}
+	config.Seed = string(seed)
 	if err := binary.Read(r, binary.LittleEndian, &chunkCount); err != nil {
 		return nil, err
 	}
@@ -103,6 +120,7 @@ func LoadBinary(r io.Reader) (*Map, error) {
 	m := &Map{
 		Width:  int(width),
 		Height: int(height),
+		Config: config,
 		Chunks: make(map[world.ChunkCoord]*world.Chunk, chunkCount),
 	}
 

@@ -1,0 +1,13 @@
+{
+  "name": "islands-client",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "check:js": "node --check app.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2"
+  }
+}

@@ -58,6 +58,28 @@ func TestLoginDoesNotMintArbitraryActorTokens(t *testing.T) {
 	}
 }
 
+func TestLoginReturnsDemoActorPosition(t *testing.T) {
+	server, _ := newTestServer()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"user_id":1,"actor_id":1,"world_id":1}`))
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var result loginResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Actors) != 1 {
+		t.Fatalf("actors count: got %d, want 1", len(result.Actors))
+	}
+	if result.Actors[0].X != game.DemoActorStartX || result.Actors[0].Y != game.DemoActorStartY {
+		t.Fatalf("actor position: got %d,%d want %d,%d", result.Actors[0].X, result.Actors[0].Y, game.DemoActorStartX, game.DemoActorStartY)
+	}
+}
+
 func TestActionsUseActorFromToken(t *testing.T) {
 	server, manager := newTestServer()
 	token, _, err := manager.Issue(1, 1, 1)

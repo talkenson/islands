@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Islands</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <section class="map-pane" aria-label="Карта мира">
+      <div class="topbar">
+        <div>
+          <h1>Islands</h1>
+          <p id="subtitle">Мир 1 · актёр 1</p>
+        </div>
+        <div class="status" id="status">
+          <span class="status-dot"></span>
+          <span id="statusText">загрузка</span>
+        </div>
+      </div>
+
+      <div class="map-frame">
+        <canvas id="worldCanvas" width="768" height="768"></canvas>
+        <div class="map-empty" id="emptyState">ожидание чанков</div>
+      </div>
+    </section>
+
+    <aside class="sidebar" aria-label="Панель управления">
+      <section class="panel">
+        <div class="panel-title">
+          <span>Актёр</span>
+          <strong id="actorPosition">0, 0</strong>
+        </div>
+        <div class="stats">
+          <div>
+            <span>Чанков</span>
+            <strong id="chunkCount">0</strong>
+          </div>
+          <div>
+            <span>Запас клетки</span>
+            <strong id="cellStock">-</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel controls">
+        <button class="icon-button" id="moveUp" aria-label="Вверх" title="Вверх">↑</button>
+        <button class="icon-button" id="moveLeft" aria-label="Влево" title="Влево">←</button>
+        <button class="icon-button primary" id="harvest" aria-label="Собрать ресурс" title="Собрать ресурс">⛏</button>
+        <button class="icon-button" id="moveRight" aria-label="Вправо" title="Вправо">→</button>
+        <button class="icon-button" id="moveDown" aria-label="Вниз" title="Вниз">↓</button>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">
+          <span>События</span>
+          <button id="reconnect" class="text-button">обновить</button>
+        </div>
+        <ol id="eventLog" class="event-log"></ol>
+      </section>
+    </aside>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

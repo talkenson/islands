@@ -17,11 +17,17 @@ var (
 	ErrConflict      = errors.New("conflict")
 )
 
+const (
+	DemoActorStartX int32 = 900
+	DemoActorStartY int32 = 1900
+)
+
 type Service struct {
 	mu           sync.Mutex
 	actors       map[actor.ID]*actor.Actor
 	chunks       map[uint64]map[world.ChunkCoord]*world.Chunk
 	loadedWorlds map[uint64]bool
+	renderSeeds  map[uint64]string
 	tick         uint64
 	nextID       uint64
 	hub          *realtime.Hub
@@ -36,6 +42,7 @@ func NewService(hub *realtime.Hub, config realtime.Config) *Service {
 		actors:       make(map[actor.ID]*actor.Actor),
 		chunks:       make(map[uint64]map[world.ChunkCoord]*world.Chunk),
 		loadedWorlds: make(map[uint64]bool),
+		renderSeeds:  make(map[uint64]string),
 		hub:          hub,
 		config:       config.Normalize(),
 	}
@@ -46,7 +53,9 @@ func (s *Service) SeedDemoWorld(worldID uint64) actor.Actor {
 	defer s.mu.Unlock()
 
 	act := seedDemoActorLocked(s.actors, worldID)
-	s.ensureChunkLocked(worldID, world.ChunkCoord{X: 0, Y: 0})
+	coord, _ := world.ToChunkCoord(act.X, act.Y)
+	s.ensureChunkLocked(worldID, coord)
+	s.renderSeeds[worldID] = "demo"
 	return act
 }
 
@@ -85,6 +94,21 @@ func (s *Service) LoadChunks(worldID uint64, chunks map[world.ChunkCoord]*world.
 	return nil
 }
 
+func (s *Service) SetWorldRenderSeed(worldID uint64, seed string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.renderSeeds[worldID] = seed
+}
+
+func (s *Service) WorldRenderSeed(worldID uint64) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if seed := s.renderSeeds[worldID]; seed != "" {
+		return seed
+	}
+	return "demo"
+}
+
 func (s *Service) Actor(ctx context.Context, worldID, actorID uint64) (actor.Actor, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -118,6 +142,10 @@ type ChunkSnapshot struct {
 func (s *Service) ChunkSnapshots(ctx context.Context, worldID uint64, coords map[world.ChunkCoord]struct{}) []ChunkSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.chunkSnapshotsLocked(worldID, coords)
+}
+
+func (s *Service) chunkSnapshotsLocked(worldID uint64, coords map[world.ChunkCoord]struct{}) []ChunkSnapshot {
 	snapshots := make([]ChunkSnapshot, 0, len(coords))
 	for coord := range coords {
 		ch := s.chunkLocked(worldID, coord)
@@ -156,17 +184,31 @@ func (s *Service) ApplyAction(ctx context.Context, worldID, actorID uint64, req 
 
 	switch req.ActionType {
 	case "move":
+		oldCenter, _ := world.ToChunkCoord(act.X, act.Y)
 		act.X = req.X
 		act.Y = req.Y
 		s.tick++
 		eventID := s.nextEventIDLocked()
 		center, _ := world.ToChunkCoord(act.X, act.Y)
 		interest := realtime.VisibleChunks(center, s.config.VisibleChunkRadius)
+		oldInterest := realtime.VisibleChunks(oldCenter, s.config.VisibleChunkRadius)
+		newChunks := interestDifference(interest, oldInterest)
 		changed := interestList(interest)
+		snapshots := s.chunkSnapshotsLocked(worldID, newChunks)
 		result := ActionResult{Accepted: true, ClientActionID: req.ClientActionID, Actor: *act, EventID: eventID}
 		s.mu.Unlock()
 		s.hub.SetActorInterest(worldID, actorID, interest)
 		s.hub.Publish(realtime.Event{ID: eventID, Type: "entity_patch", WorldID: worldID, ChangedChunks: changed, Data: result})
+		for _, snapshot := range snapshots {
+			snapshotID := s.nextEventID()
+			s.hub.Publish(realtime.Event{
+				ID:            snapshotID,
+				Type:          "chunk_snapshot",
+				WorldID:       worldID,
+				ChangedChunks: []world.ChunkCoord{{X: snapshot.CX, Y: snapshot.CY}},
+				Data:          snapshot,
+			})
+		}
 		return result, nil
 	case "harvest":
 		coord, index := world.ToChunkCoord(act.X, act.Y)
@@ -229,7 +271,7 @@ func (s *Service) chunkLocked(worldID uint64, coord world.ChunkCoord) *world.Chu
 }
 
 func seedDemoActorLocked(actors map[actor.ID]*actor.Actor, worldID uint64) actor.Actor {
-	act := actor.Actor{ID: 1, WorldID: worldID, X: 0, Y: 0, PocketInventoryID: 1}
+	act := actor.Actor{ID: 1, WorldID: worldID, X: DemoActorStartX, Y: DemoActorStartY, PocketInventoryID: 1}
 	actors[act.ID] = &act
 	return act
 }
@@ -237,6 +279,12 @@ func seedDemoActorLocked(actors map[actor.ID]*actor.Actor, worldID uint64) actor
 func (s *Service) nextEventIDLocked() uint64 {
 	s.nextID++
 	return s.nextID
+}
+
+func (s *Service) nextEventID() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.nextEventIDLocked()
 }
 
 func snapshotChunk(ch *world.Chunk, tick uint64) ChunkSnapshot {
@@ -256,6 +304,16 @@ func interestList(interest map[world.ChunkCoord]struct{}) []world.ChunkCoord {
 	out := make([]world.ChunkCoord, 0, len(interest))
 	for coord := range interest {
 		out = append(out, coord)
+	}
+	return out
+}
+
+func interestDifference(next, previous map[world.ChunkCoord]struct{}) map[world.ChunkCoord]struct{} {
+	out := make(map[world.ChunkCoord]struct{})
+	for coord := range next {
+		if _, ok := previous[coord]; !ok {
+			out[coord] = struct{}{}
+		}
 	}
 	return out
 }

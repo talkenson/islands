@@ -10,6 +10,7 @@ import (
 
 	"islands/internal/auth"
 	"islands/internal/game"
+	"islands/internal/mapgen"
 	"islands/internal/realtime"
 )
 
@@ -40,6 +41,7 @@ func (s *Server) routes() {
 	protected := auth.Middleware(s.auth)
 	s.mux.Handle("GET /api/v1/worlds/{worldID}/stream", protected(http.HandlerFunc(s.stream)))
 	s.mux.Handle("POST /api/v1/worlds/{worldID}/actions", protected(http.HandlerFunc(s.actions)))
+	s.mux.Handle("GET /", http.FileServer(http.Dir("client")))
 }
 
 type loginRequest struct {
@@ -58,6 +60,8 @@ type loginResponse struct {
 type actorRef struct {
 	ID      uint64 `json:"id"`
 	WorldID uint64 `json:"world_id"`
+	X       int32  `json:"x"`
+	Y       int32  `json:"y"`
 }
 
 type worldRef struct {
@@ -87,10 +91,15 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		auth.WriteError(w, http.StatusInternalServerError, "conflict", err.Error())
 		return
 	}
+	act, err := s.game.Actor(r.Context(), req.WorldID, req.ActorID)
+	if err != nil {
+		writeGameError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, loginResponse{
 		Token:  token,
 		UserID: req.UserID,
-		Actors: []actorRef{{ID: req.ActorID, WorldID: req.WorldID}},
+		Actors: []actorRef{{ID: req.ActorID, WorldID: req.WorldID, X: act.X, Y: act.Y}},
 		Worlds: []worldRef{{ID: req.WorldID}},
 	})
 }
@@ -120,6 +129,11 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		writeGameError(w, err)
 		return
 	}
+	act, err := s.game.Actor(r.Context(), worldID, claims.ActorID)
+	if err != nil {
+		writeGameError(w, err)
+		return
+	}
 	client := s.hub.Subscribe(claims.ActorID, worldID, interest)
 	defer s.hub.Unsubscribe(client.ID)
 
@@ -128,8 +142,10 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 
 	_ = writeSSE(w, realtime.Event{Type: "hello", WorldID: worldID, Data: map[string]any{
-		"actor_id": claims.ActorID,
-		"world_id": worldID,
+		"actor_id":      claims.ActorID,
+		"world_id":      worldID,
+		"actor":         act,
+		"render_config": mapgen.DefaultRenderConfig(s.game.WorldRenderSeed(worldID)),
 	}})
 	for _, snapshot := range s.game.ChunkSnapshots(r.Context(), worldID, interest) {
 		_ = writeSSE(w, realtime.Event{

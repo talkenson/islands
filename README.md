@@ -82,6 +82,7 @@ GOCACHE=/home/talk/work/islands/.gocache go run ./cmd/islands \
 ```
 
 Use `-visible-chunk-radius 2` for a `5x5` live chunk window. If `-world-map` is omitted, the server starts with a small in-memory demo world.
+`world.islmap` stores the generator seed used by the frontend render palette/noise.
 
 ## Tests
 
