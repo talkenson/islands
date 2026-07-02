@@ -2,6 +2,10 @@ package mapgen
 
 import (
 	"math"
+	"runtime"
+	"sort"
+	"sync"
+	"time"
 
 	"islands/internal/world"
 )
@@ -12,22 +16,29 @@ const (
 )
 
 func Generate(config Config) (*Map, error) {
+	m, _, err := GenerateWithReport(config)
+	return m, err
+}
+
+func GenerateWithReport(config Config) (*Map, *GenerateReport, error) {
 	if config.Width <= 0 || config.Height <= 0 {
-		return nil, errInvalidSize
+		return nil, nil, errInvalidSize
+	}
+
+	report := &GenerateReport{}
+	stageStart := time.Now()
+	recordStage := func(name string) {
+		now := time.Now()
+		report.Stages = append(report.Stages, StageTiming{Name: name, Duration: now.Sub(stageStart)})
+		stageStart = now
 	}
 
 	rand := newRandom(config.Seed)
-	heightNoise := newValueNoise(makeSeed(config.Seed, "height"))
-	detailNoise := newValueNoise(makeSeed(config.Seed, "detail"))
-	moistureNoise := newValueNoise(makeSeed(config.Seed, "moisture"))
-	temperatureNoise := newValueNoise(makeSeed(config.Seed, "temperature"))
-	forestNoise := newValueNoise(makeSeed(config.Seed, "forest"))
-	lakeNoise := newValueNoise(makeSeed(config.Seed, "lake"))
 	shallowNoise := newValueNoise(makeSeed(config.Seed, "shallow"))
-	geologyNoise := newValueNoise(makeSeed(config.Seed, "geology"))
 	riverNoise := newValueNoise(makeSeed(config.Seed, "river"))
 
 	continents := createContinents(config, rand)
+	recordStage("continents")
 	result := &Map{
 		Width:      config.Width,
 		Height:     config.Height,
@@ -37,20 +48,24 @@ func Generate(config Config) (*Map, error) {
 		heights:    make([]float64, config.Width*config.Height),
 	}
 
-	for y := 0; y < config.Height; y++ {
-		for x := 0; x < config.Width; x++ {
-			createCell(result, x, y, config, continents, heightNoise, detailNoise, moistureNoise, temperatureNoise, forestNoise, lakeNoise)
-		}
-	}
+	chunks := initializeChunks(result, config)
+	recordStage("initialize chunks")
+	generateCells(result, config, continents, chunks)
+	recordStage("generate cells")
 
 	classifyWaterBodies(result, config)
+	recordStage("classify water")
 	addShallowWater(result, config, shallowNoise)
-	addGeology(result, config, geologyNoise)
-	addRivers(result, config, rand, riverNoise)
+	recordStage("shallow water")
+	addGeology(result, config, chunks)
+	recordStage("geology")
+	addRivers(result, config, chunks, rand, riverNoise)
+	recordStage("rivers")
 	clearDirty(result)
 	result.Stats = collectStats(result)
+	recordStage("stats")
 
-	return result, nil
+	return result, report, nil
 }
 
 type invalidSizeError struct{}
@@ -58,6 +73,91 @@ type invalidSizeError struct{}
 func (invalidSizeError) Error() string { return "map dimensions must be positive" }
 
 var errInvalidSize error = invalidSizeError{}
+
+func initializeChunks(m *Map, config Config) []world.ChunkCoord {
+	chunkWidth := (config.Width + world.ChunkSize - 1) / world.ChunkSize
+	chunkHeight := (config.Height + world.ChunkSize - 1) / world.ChunkSize
+	chunks := make([]world.ChunkCoord, 0, chunkWidth*chunkHeight)
+	for cy := 0; cy < chunkHeight; cy++ {
+		for cx := 0; cx < chunkWidth; cx++ {
+			coord := world.ChunkCoord{X: int32(cx), Y: int32(cy)}
+			m.Chunks[coord] = world.NewChunk(coord.X, coord.Y)
+			chunks = append(chunks, coord)
+		}
+	}
+	return chunks
+}
+
+func generateCells(m *Map, config Config, continents []Continent, chunks []world.ChunkCoord) {
+	runChunkWorkerPool(config, chunks, func(jobs <-chan world.ChunkCoord) {
+		heightNoise := newValueNoise(makeSeed(config.Seed, "height"))
+		detailNoise := newValueNoise(makeSeed(config.Seed, "detail"))
+		moistureNoise := newValueNoise(makeSeed(config.Seed, "moisture"))
+		temperatureNoise := newValueNoise(makeSeed(config.Seed, "temperature"))
+		forestNoise := newValueNoise(makeSeed(config.Seed, "forest"))
+		lakeNoise := newValueNoise(makeSeed(config.Seed, "lake"))
+
+		for coord := range jobs {
+			x0, y0, x1, y1 := chunkBounds(config, coord)
+			for y := y0; y < y1; y++ {
+				for x := x0; x < x1; x++ {
+					createCell(m, x, y, config, continents, heightNoise, detailNoise, moistureNoise, temperatureNoise, forestNoise, lakeNoise)
+				}
+			}
+		}
+	})
+}
+
+func runChunkWorkers(config Config, chunks []world.ChunkCoord, work func(world.ChunkCoord)) {
+	runChunkWorkerPool(config, chunks, func(jobs <-chan world.ChunkCoord) {
+		for coord := range jobs {
+			work(coord)
+		}
+	})
+}
+
+func runChunkWorkerPool(config Config, chunks []world.ChunkCoord, work func(<-chan world.ChunkCoord)) {
+	workers := workerCount(config)
+	if workers <= 1 || len(chunks) <= 1 {
+		jobs := make(chan world.ChunkCoord, len(chunks))
+		for _, chunk := range chunks {
+			jobs <- chunk
+		}
+		close(jobs)
+		work(jobs)
+		return
+	}
+
+	jobs := make(chan world.ChunkCoord)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			work(jobs)
+		}()
+	}
+	for _, coord := range chunks {
+		jobs <- coord
+	}
+	close(jobs)
+	wg.Wait()
+}
+
+func workerCount(config Config) int {
+	if config.Workers > 0 {
+		return config.Workers
+	}
+	return min(max(runtime.GOMAXPROCS(0), 1), 8)
+}
+
+func chunkBounds(config Config, coord world.ChunkCoord) (int, int, int, int) {
+	x0 := int(coord.X) * world.ChunkSize
+	y0 := int(coord.Y) * world.ChunkSize
+	x1 := min(x0+world.ChunkSize, config.Width)
+	y1 := min(y0+world.ChunkSize, config.Height)
+	return x0, y0, x1, y1
+}
 
 func createContinents(config Config, rand *random) []Continent {
 	marginX := float64(config.Width) * config.OceanMargin
@@ -342,39 +442,45 @@ func localShallowWidth(m *Map, x, y int, config Config, shallowNoise *valueNoise
 	return max(config.ShallowWaterMinWidth, maxWidth)
 }
 
-func addGeology(m *Map, config Config, geologyNoise *valueNoise) {
-	for y := 0; y < config.Height; y++ {
-		for x := 0; x < config.Width; x++ {
-			ch, idx := chunkCell(m, x, y)
-			if ch.WaterCell(idx).Kind() != world.WaterNone {
-				continue
-			}
-			base := ch.BaseCell(idx)
-			height := m.heightAt(x, y)
-			if hasWaterNeighbor(m, x, y) {
-				beachNoise := geologyNoise.octaveNoise2D(float64(x)*config.RockScale*1.8+71, float64(y)*config.RockScale*1.8+83, 3, 0.55)
-				if beachNoise < config.RockyBeachChance {
-					ch.SetBase(idx, world.PackBase(base.Biome(), world.SoilRocky, base.Elevation(), base.Flags()))
-					ch.SetCover(idx, world.PackCover(world.CoverNone, 0, coverFlagRock))
-					ch.SetStock(idx, uint16(math.Round(2+beachNoise*8)))
-					continue
+func addGeology(m *Map, config Config, chunks []world.ChunkCoord) {
+	runChunkWorkerPool(config, chunks, func(jobs <-chan world.ChunkCoord) {
+		geologyNoise := newValueNoise(makeSeed(config.Seed, "geology"))
+		for coord := range jobs {
+			x0, y0, x1, y1 := chunkBounds(config, coord)
+			for y := y0; y < y1; y++ {
+				for x := x0; x < x1; x++ {
+					ch, idx := chunkCell(m, x, y)
+					if ch.WaterCell(idx).Kind() != world.WaterNone {
+						continue
+					}
+					base := ch.BaseCell(idx)
+					height := m.heightAt(x, y)
+					if hasWaterNeighbor(m, x, y) {
+						beachNoise := geologyNoise.octaveNoise2D(float64(x)*config.RockScale*1.8+71, float64(y)*config.RockScale*1.8+83, 3, 0.55)
+						if beachNoise < config.RockyBeachChance {
+							ch.SetBase(idx, world.PackBase(base.Biome(), world.SoilRocky, base.Elevation(), base.Flags()))
+							ch.SetCover(idx, world.PackCover(world.CoverNone, 0, coverFlagRock))
+							ch.SetStock(idx, uint16(math.Round(2+beachNoise*8)))
+							continue
+						}
+					}
+					mountainNoise := geologyNoise.octaveNoise2D(float64(x)*config.MountainScale+101, float64(y)*config.MountainScale+109, 4, 0.6)
+					if height > config.MountainHeight && mountainNoise > config.MountainThreshold {
+						ch.SetBase(idx, world.PackBase(world.BiomeMountain, world.SoilRocky, base.Elevation(), base.Flags()))
+						ch.SetCover(idx, world.PackCover(world.CoverNone, 0, coverFlagMountain))
+						ch.SetStock(idx, uint16(math.Round(18+(height-config.MountainHeight)*90)))
+						continue
+					}
+					rockNoise := geologyNoise.octaveNoise2D(float64(x)*config.RockScale, float64(y)*config.RockScale, 4, 0.58)
+					if rockNoise > config.RockThreshold && height > config.LandThreshold+0.07 {
+						ch.SetBase(idx, world.PackBase(base.Biome(), world.SoilRocky, base.Elevation(), base.Flags()))
+						ch.SetCover(idx, world.PackCover(world.CoverNone, 0, coverFlagRock))
+						ch.SetStock(idx, uint16(math.Round(5+(rockNoise-config.RockThreshold)*35)))
+					}
 				}
 			}
-			mountainNoise := geologyNoise.octaveNoise2D(float64(x)*config.MountainScale+101, float64(y)*config.MountainScale+109, 4, 0.6)
-			if height > config.MountainHeight && mountainNoise > config.MountainThreshold {
-				ch.SetBase(idx, world.PackBase(world.BiomeMountain, world.SoilRocky, base.Elevation(), base.Flags()))
-				ch.SetCover(idx, world.PackCover(world.CoverNone, 0, coverFlagMountain))
-				ch.SetStock(idx, uint16(math.Round(18+(height-config.MountainHeight)*90)))
-				continue
-			}
-			rockNoise := geologyNoise.octaveNoise2D(float64(x)*config.RockScale, float64(y)*config.RockScale, 4, 0.58)
-			if rockNoise > config.RockThreshold && height > config.LandThreshold+0.07 {
-				ch.SetBase(idx, world.PackBase(base.Biome(), world.SoilRocky, base.Elevation(), base.Flags()))
-				ch.SetCover(idx, world.PackCover(world.CoverNone, 0, coverFlagRock))
-				ch.SetStock(idx, uint16(math.Round(5+(rockNoise-config.RockThreshold)*35)))
-			}
 		}
-	}
+	})
 }
 
 type riverCandidate struct {
@@ -382,25 +488,11 @@ type riverCandidate struct {
 	height float64
 }
 
-func addRivers(m *Map, config Config, rand *random, riverNoise *valueNoise) {
-	candidates := make([]riverCandidate, 0)
-	for y := 2; y < config.Height-2; y++ {
-		for x := 2; x < config.Width-2; x++ {
-			ch, idx := chunkCell(m, x, y)
-			if ch.WaterCell(idx).Kind() != world.WaterNone {
-				continue
-			}
-			height := m.heightAt(x, y)
-			if height < config.LandThreshold+0.15 {
-				continue
-			}
-			if distanceToWater(m, x, y, 18) > 8 {
-				candidates = append(candidates, riverCandidate{x: x, y: y, height: height})
-			}
-		}
-	}
-
+func addRivers(m *Map, config Config, chunks []world.ChunkCoord, rand *random, riverNoise *valueNoise) {
+	waterDistance := buildWaterDistanceField(m)
+	candidates := collectRiverCandidates(m, config, chunks, waterDistance)
 	sortRiverCandidates(candidates)
+
 	targetCount := max(1, int(math.Round(float64(config.RiverCount))))
 	attempts := 0
 	created := 0
@@ -413,7 +505,7 @@ func addRivers(m *Map, config Config, rand *random, riverNoise *valueNoise) {
 			continue
 		}
 
-		path := traceRiver(m, start, config, riverNoise, created)
+		path := traceRiver(m, start, config, riverNoise, waterDistance, created)
 		if len(path) >= config.MinRiverLength {
 			end := path[len(path)-1]
 			if isWater(m, end[0], end[1]) {
@@ -424,19 +516,131 @@ func addRivers(m *Map, config Config, rand *random, riverNoise *valueNoise) {
 	}
 }
 
-func sortRiverCandidates(candidates []riverCandidate) {
-	for i := 1; i < len(candidates); i++ {
-		item := candidates[i]
-		j := i - 1
-		for j >= 0 && candidates[j].height < item.height {
-			candidates[j+1] = candidates[j]
-			j--
+func collectRiverCandidates(m *Map, config Config, chunks []world.ChunkCoord, waterDistance []uint16) []riverCandidate {
+	candidates := make([]riverCandidate, 0)
+	var mu sync.Mutex
+	runChunkWorkerPool(config, chunks, func(jobs <-chan world.ChunkCoord) {
+		local := make([]riverCandidate, 0)
+		for coord := range jobs {
+			x0, y0, x1, y1 := chunkBounds(config, coord)
+			x0 = max(x0, 2)
+			y0 = max(y0, 2)
+			x1 = min(x1, config.Width-2)
+			y1 = min(y1, config.Height-2)
+			for y := y0; y < y1; y++ {
+				for x := x0; x < x1; x++ {
+					ch, idx := chunkCell(m, x, y)
+					if ch.WaterCell(idx).Kind() != world.WaterNone {
+						continue
+					}
+					height := m.heightAt(x, y)
+					if height < config.LandThreshold+0.15 {
+						continue
+					}
+					if waterDistanceAt(m, waterDistance, x, y) > 8 {
+						local = append(local, riverCandidate{x: x, y: y, height: height})
+					}
+				}
+			}
 		}
-		candidates[j+1] = item
-	}
+		if len(local) == 0 {
+			return
+		}
+		mu.Lock()
+		candidates = append(candidates, local...)
+		mu.Unlock()
+	})
+	return candidates
 }
 
-func traceRiver(m *Map, start riverCandidate, config Config, riverNoise *valueNoise, riverIndex int) [][2]int {
+func buildWaterDistanceField(m *Map) []uint16 {
+	maxDistance := maxWaterDistance(m)
+	distances := make([]uint16, m.Width*m.Height)
+	for i := range distances {
+		distances[i] = uint16(maxDistance)
+	}
+
+	queue := make([]int32, 0)
+	for y := 0; y < m.Height; y++ {
+		for x := 0; x < m.Width; x++ {
+			if !isWater(m, x, y) {
+				continue
+			}
+			distances[y*m.Width+x] = uint16(0)
+			if hasLandNeighbor(m, x, y) {
+				queue = append(queue, int32(y*m.Width+x))
+			}
+		}
+	}
+
+	for i := 0; i < len(queue); i++ {
+		cell := int(queue[i])
+		x := cell % m.Width
+		y := cell / m.Width
+		nextDistance := int(distances[cell]) + 1
+		if nextDistance > maxDistance {
+			continue
+		}
+		nbs, count := neighborIndexes(x, y, m.Width, m.Height)
+		for i := 0; i < count; i++ {
+			nb := nbs[i]
+			if isWater(m, nb%m.Width, nb/m.Width) || nextDistance >= int(distances[nb]) {
+				continue
+			}
+			distances[nb] = uint16(nextDistance)
+			queue = append(queue, int32(nb))
+		}
+	}
+
+	return distances
+}
+
+func maxWaterDistance(m *Map) int {
+	return min(m.Width+m.Height+1, 65535)
+}
+
+func waterDistanceAt(m *Map, distances []uint16, x, y int) int {
+	if x < 0 || y < 0 || x >= m.Width || y >= m.Height {
+		return maxWaterDistance(m)
+	}
+	return int(distances[y*m.Width+x])
+}
+
+func neighborIndexes(x, y, width, height int) ([4]int, int) {
+	var result [4]int
+	i := 0
+	if x > 0 {
+		result[i] = y*width + x - 1
+		i++
+	}
+	if x < width-1 {
+		result[i] = y*width + x + 1
+		i++
+	}
+	if y > 0 {
+		result[i] = (y-1)*width + x
+		i++
+	}
+	if y < height-1 {
+		result[i] = (y+1)*width + x
+		i++
+	}
+	return result, i
+}
+
+func sortRiverCandidates(candidates []riverCandidate) {
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].height != candidates[j].height {
+			return candidates[i].height > candidates[j].height
+		}
+		if candidates[i].y != candidates[j].y {
+			return candidates[i].y < candidates[j].y
+		}
+		return candidates[i].x < candidates[j].x
+	})
+}
+
+func traceRiver(m *Map, start riverCandidate, config Config, riverNoise *valueNoise, waterDistance []uint16, riverIndex int) [][2]int {
 	path := [][2]int{{start.x, start.y}}
 	visited := map[[2]int]struct{}{{start.x, start.y}: {}}
 	current := [2]int{start.x, start.y}
@@ -451,7 +655,7 @@ func traceRiver(m *Map, start riverCandidate, config Config, riverNoise *valueNo
 			}
 		}
 
-		next, ok := bestRiverStep(m, nbs, visited, current, previous, config, riverNoise, riverIndex)
+		next, ok := bestRiverStep(m, nbs, visited, current, previous, config, riverNoise, waterDistance, riverIndex)
 		if !ok {
 			break
 		}
@@ -468,7 +672,7 @@ func traceRiver(m *Map, start riverCandidate, config Config, riverNoise *valueNo
 	return path
 }
 
-func bestRiverStep(m *Map, nbs [][2]int, visited map[[2]int]struct{}, current [2]int, previous *[2]int, config Config, riverNoise *valueNoise, riverIndex int) ([2]int, bool) {
+func bestRiverStep(m *Map, nbs [][2]int, visited map[[2]int]struct{}, current [2]int, previous *[2]int, config Config, riverNoise *valueNoise, waterDistance []uint16, riverIndex int) ([2]int, bool) {
 	var best [2]int
 	bestScore := math.Inf(1)
 	found := false
@@ -476,7 +680,7 @@ func bestRiverStep(m *Map, nbs [][2]int, visited map[[2]int]struct{}, current [2
 		if _, ok := visited[nb]; ok {
 			continue
 		}
-		score := scoreRiverStep(m, nb, current, previous, config, riverNoise, riverIndex)
+		score := scoreRiverStep(m, nb, current, previous, config, riverNoise, waterDistance, riverIndex)
 		if score < bestScore {
 			best = nb
 			bestScore = score
@@ -486,11 +690,15 @@ func bestRiverStep(m *Map, nbs [][2]int, visited map[[2]int]struct{}, current [2
 	return best, found
 }
 
-func scoreRiverStep(m *Map, cell, current [2]int, previous *[2]int, config Config, riverNoise *valueNoise, riverIndex int) float64 {
+func scoreRiverStep(m *Map, cell, current [2]int, previous *[2]int, config Config, riverNoise *valueNoise, waterDistance []uint16, riverIndex int) float64 {
 	height := m.heightAt(cell[0], cell[1])
 	currentHeight := m.heightAt(current[0], current[1])
 	edgeDistance := min(min(cell[0], cell[1]), min(config.Width-1-cell[0], config.Height-1-cell[1]))
 	downhill := height - currentHeight
+	maxDistance := float64(max(config.Width, config.Height))
+	cellWaterDistance := float64(waterDistanceAt(m, waterDistance, cell[0], cell[1]))
+	currentWaterDistance := float64(waterDistanceAt(m, waterDistance, current[0], current[1]))
+	waterDirection := (cellWaterDistance - currentWaterDistance) / maxDistance
 	meander := riverNoise.octaveNoise2D(float64(cell[0])*config.RiverMeanderScale+float64(riverIndex)*19, float64(cell[1])*config.RiverMeanderScale+float64(riverIndex)*31, 3, 0.58) - 0.5
 	turnPenalty := 0.0
 	if previous != nil {
@@ -499,6 +707,9 @@ func scoreRiverStep(m *Map, cell, current [2]int, previous *[2]int, config Confi
 
 	return height +
 		math.Max(0, downhill)*1.35 +
+		cellWaterDistance/maxDistance*0.22 +
+		math.Max(0, waterDirection)*0.35 -
+		math.Max(0, -waterDirection)*0.08 +
 		float64(edgeDistance)/float64(max(config.Width, config.Height))*0.1 -
 		meander*config.RiverMeanderStrength +
 		turnPenalty
@@ -573,44 +784,51 @@ func setCell(m *Map, x, y int, base world.BaseCell, water world.WaterCell, cover
 }
 
 func classifyWaterBodies(m *Map, config Config) {
-	visited := make(map[[2]int]struct{})
+	visited := make([]bool, config.Width*config.Height)
 	for y := 0; y < config.Height; y++ {
 		for x := 0; x < config.Width; x++ {
-			key := [2]int{x, y}
-			if _, ok := visited[key]; ok || !isWater(m, x, y) {
+			index := y*config.Width + x
+			if visited[index] || !isWater(m, x, y) {
 				continue
 			}
-			body, touchesEdge := collectWaterBody(m, x, y, visited)
-			kind := world.WaterLake
+			body, touchesEdge := collectWaterBody(m, index, visited)
 			if touchesEdge {
-				kind = world.WaterSea
+				continue
 			}
 			for _, cell := range body {
-				ch, idx := chunkCell(m, cell[0], cell[1])
-				ch.SetWater(idx, world.PackWater(kind, 4, false))
+				index := int(cell)
+				ch, idx := chunkCell(m, index%m.Width, index/m.Width)
+				ch.SetWater(idx, world.PackWater(world.WaterLake, 4, false))
 			}
 		}
 	}
 }
 
-func collectWaterBody(m *Map, startX, startY int, visited map[[2]int]struct{}) ([][2]int, bool) {
-	queue := [][2]int{{startX, startY}}
-	body := make([][2]int, 0)
+func collectWaterBody(m *Map, start int, visited []bool) ([]int32, bool) {
+	queue := []int32{int32(start)}
+	body := make([]int32, 0)
 	touchesEdge := false
-	visited[[2]int{startX, startY}] = struct{}{}
+	visited[start] = true
 
 	for i := 0; i < len(queue); i++ {
-		cell := queue[i]
-		body = append(body, cell)
-		if cell[0] == 0 || cell[1] == 0 || cell[0] == m.Width-1 || cell[1] == m.Height-1 {
+		cell := int(queue[i])
+		x := cell % m.Width
+		y := cell / m.Width
+		if x == 0 || y == 0 || x == m.Width-1 || y == m.Height-1 {
 			touchesEdge = true
+			body = nil
 		}
-		for _, nb := range neighbors(cell[0], cell[1], m.Width, m.Height) {
-			if _, ok := visited[nb]; ok || !isWater(m, nb[0], nb[1]) {
+		if !touchesEdge {
+			body = append(body, int32(cell))
+		}
+		nbs, count := neighborIndexes(x, y, m.Width, m.Height)
+		for j := 0; j < count; j++ {
+			nb := nbs[j]
+			if visited[nb] || !isWater(m, nb%m.Width, nb/m.Width) {
 				continue
 			}
-			visited[nb] = struct{}{}
-			queue = append(queue, nb)
+			visited[nb] = true
+			queue = append(queue, int32(nb))
 		}
 	}
 
@@ -736,22 +954,6 @@ func neighbors8(x, y, width, height int) [][2]int {
 	return result
 }
 
-func distanceToWater(m *Map, x, y, maxRadius int) int {
-	for radius := 1; radius <= maxRadius; radius++ {
-		for yy := y - radius; yy <= y+radius; yy++ {
-			for xx := x - radius; xx <= x+radius; xx++ {
-				if abs(xx-x) != radius && abs(yy-y) != radius {
-					continue
-				}
-				if xx >= 0 && yy >= 0 && xx < m.Width && yy < m.Height && isWater(m, xx, yy) {
-					return radius
-				}
-			}
-		}
-	}
-	return maxRadius + 1
-}
-
 func nearbyRiver(m *Map, x, y, radius int) bool {
 	for yy := y - radius; yy <= y+radius; yy++ {
 		for xx := x - radius; xx <= x+radius; xx++ {
@@ -761,13 +963,6 @@ func nearbyRiver(m *Map, x, y, radius int) bool {
 		}
 	}
 	return false
-}
-
-func abs(v int) int {
-	if v < 0 {
-		return -v
-	}
-	return v
 }
 
 func clamp(value, minValue, maxValue float64) float64 {

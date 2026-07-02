@@ -140,19 +140,21 @@ func LoadBinary(r io.Reader) (*Map, error) {
 }
 
 func writeUint16s(w io.Writer, values []uint16) error {
-	for _, value := range values {
-		if err := binary.Write(w, binary.LittleEndian, value); err != nil {
-			return err
-		}
+	buf := make([]byte, len(values)*2)
+	for i, value := range values {
+		binary.LittleEndian.PutUint16(buf[i*2:], value)
 	}
-	return nil
+	_, err := w.Write(buf)
+	return err
 }
 
 func readUint16s(r io.Reader, values []uint16) error {
+	buf := make([]byte, len(values)*2)
+	if _, err := io.ReadFull(r, buf); err != nil {
+		return err
+	}
 	for i := range values {
-		if err := binary.Read(r, binary.LittleEndian, &values[i]); err != nil {
-			return err
-		}
+		values[i] = binary.LittleEndian.Uint16(buf[i*2:])
 	}
 	return nil
 }

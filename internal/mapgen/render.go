@@ -11,6 +11,10 @@ import (
 )
 
 func RenderPNG(w io.Writer, m *Map, pixelSize int) error {
+	return RenderPNGWithPalette(w, m, pixelSize, DefaultRenderPalette)
+}
+
+func RenderPNGWithPalette(w io.Writer, m *Map, pixelSize int, palette RenderPalette) error {
 	if pixelSize < 1 {
 		pixelSize = 1
 	}
@@ -19,7 +23,7 @@ func RenderPNG(w io.Writer, m *Map, pixelSize int) error {
 
 	for y := 0; y < m.Height; y++ {
 		for x := 0; x < m.Width; x++ {
-			c := cellColor(m, x, y, colorNoise)
+			c := cellColor(m, x, y, colorNoise, palette)
 			fillPixel(img, x*pixelSize, y*pixelSize, pixelSize, c)
 		}
 	}
@@ -27,7 +31,7 @@ func RenderPNG(w io.Writer, m *Map, pixelSize int) error {
 	return png.Encode(w, img)
 }
 
-func cellColor(m *Map, x, y int, colorNoise *valueNoise) color.RGBA {
+func cellColor(m *Map, x, y int, colorNoise *valueNoise, palette RenderPalette) color.RGBA {
 	ch, idx := chunkCell(m, x, y)
 	base := ch.BaseCell(idx)
 	water := ch.WaterCell(idx)
@@ -36,91 +40,58 @@ func cellColor(m *Map, x, y int, colorNoise *valueNoise) color.RGBA {
 
 	if water.Kind() != world.WaterNone {
 		if water.Kind() == world.WaterRiver {
-			baseColor := hexColor("#4fb7d9")
+			baseColor := palette.Water.River
 			if colorNoise.noise2D(float64(x)*0.2, float64(y)*0.2) > 0.55 {
-				baseColor = hexColor("#2e8fbd")
+				baseColor = palette.Water.RiverVariant
 			}
 			return shade(baseColor, int(math.Round(float64(water.Level()-1)*4)))
 		}
 		if water.Tidal() {
-			baseColor := hexColor("#357fa8")
+			baseColor := palette.Water.TidalSea
 			if water.Kind() == world.WaterLake {
-				baseColor = hexColor("#4a9bb0")
+				baseColor = palette.Water.TidalLake
 			}
 			return shade(baseColor, int(math.Round(float64(water.Level())*-1.5+height*12)))
 		}
 		if water.Kind() == world.WaterLake {
-			return shade(hexColor("#246f93"), int(math.Round(height*18)))
+			return shade(palette.Water.Lake, int(math.Round(height*18)))
 		}
-		return shade(hexColor("#12365f"), int(math.Round(height*22)))
+		return shade(palette.Water.Sea, int(math.Round(height*22)))
 	}
 
 	if cover.Flags()&coverFlagMountain != 0 {
 		n := colorNoise.octaveNoise2D(float64(x)*0.13+11, float64(y)*0.13+19, 3, 0.5)
-		baseColor := hexColor("#a6aaa2")
+		baseColor := palette.Terrain.MountainLight
 		if n <= 0.58 {
-			baseColor = hexColor("#6e736d")
+			baseColor = palette.Terrain.MountainDark
 		}
 		return shade(baseColor, int(math.Round((n-0.5)*22)))
 	}
 	if cover.Flags()&coverFlagRock != 0 || base.Soil() == world.SoilRocky {
 		n := colorNoise.octaveNoise2D(float64(x)*0.13+11, float64(y)*0.13+19, 3, 0.5)
 		if hasWaterNeighbor(m, x, y) {
-			return shade(hexColor("#8b8879"), int(math.Round((n-0.5)*18)))
+			return shade(palette.Terrain.CoastalRock, int(math.Round((n-0.5)*18)))
 		}
-		return shade(hexColor("#777b74"), int(math.Round((n-0.5)*20)))
+		return shade(palette.Terrain.Rock, int(math.Round((n-0.5)*20)))
 	}
 
 	switch cover.Kind() {
 	case world.CoverBirchForest:
-		return shade(hexColor("#2f6b35"), int(cover.Level())*2+int(math.Round(coverDensity(ch.Stock[idx])*12)))
+		return shade(palette.Cover.BirchForest, int(cover.Level())*2+int(math.Round(coverDensity(ch.Stock[idx])*12)))
 	case world.CoverPineForest:
-		return shade(hexColor("#234f2d"), int(cover.Level())*2+int(math.Round(coverDensity(ch.Stock[idx])*12)))
+		return shade(palette.Cover.PineForest, int(cover.Level())*2+int(math.Round(coverDensity(ch.Stock[idx])*12)))
 	case world.CoverMixedForest:
-		return shade(hexColor("#2d4d3f"), int(cover.Level())*2+int(math.Round(coverDensity(ch.Stock[idx])*12)))
+		return shade(palette.Cover.MixedForest, int(cover.Level())*2+int(math.Round(coverDensity(ch.Stock[idx])*12)))
 	case world.CoverDryBush:
-		return shade(hexColor("#756f35"), int(math.Round(coverDensity(ch.Stock[idx])*10)))
+		return shade(palette.Cover.DryBush, int(math.Round(coverDensity(ch.Stock[idx])*10)))
 	case world.CoverBush:
-		return shade(hexColor("#756f35"), int(cover.Level()))
+		return shade(palette.Cover.Bush, int(cover.Level()))
 	}
 
-	colors := biomeColors(base.Biome())
+	colors := biomeColors(palette, base.Biome())
 	n := colorNoise.octaveNoise2D(float64(x)*0.09, float64(y)*0.09, 3, 0.5)
 	colorIndex := min(len(colors)-1, int(math.Floor(n*float64(len(colors)))))
 	return shade(colors[colorIndex], int(math.Round((n-0.5)*18)))
-}
-
-func biomeColors(biome world.Biome) []color.RGBA {
-	switch biome {
-	case world.BiomeSteppe:
-		return []color.RGBA{
-			hexColor("#cfae5a"),
-			hexColor("#d8bd73"),
-			hexColor("#e1c77f"),
-			hexColor("#bea05a"),
-		}
-	case world.BiomeMarsh:
-		return []color.RGBA{
-			hexColor("#4f735f"),
-			hexColor("#5a806a"),
-			hexColor("#3f604f"),
-			hexColor("#63766a"),
-		}
-	case world.BiomeRiverValley:
-		return []color.RGBA{
-			hexColor("#5f984f"),
-			hexColor("#6fa85f"),
-			hexColor("#83ad64"),
-			hexColor("#7bb96b"),
-		}
-	default:
-		return []color.RGBA{
-			hexColor("#6fa85f"),
-			hexColor("#7bb96b"),
-			hexColor("#5f984f"),
-			hexColor("#83ad64"),
-		}
-	}
 }
 
 func coverDensity(stock uint16) float64 {

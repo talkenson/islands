@@ -1,6 +1,10 @@
 package mapgen
 
-import "islands/internal/world"
+import (
+	"time"
+
+	"islands/internal/world"
+)
 
 type Map struct {
 	Width      int
@@ -46,6 +50,15 @@ type Stats struct {
 	Rock       int
 	WoodStock  int
 	StoneStock int
+}
+
+type GenerateReport struct {
+	Stages []StageTiming
+}
+
+type StageTiming struct {
+	Name     string
+	Duration time.Duration
 }
 
 func (m *Map) setHeight(x, y int, height float64) {

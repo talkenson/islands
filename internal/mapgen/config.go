@@ -3,8 +3,9 @@ package mapgen
 type Config struct {
 	Seed string
 
-	Width  int
-	Height int
+	Width   int
+	Height  int
+	Workers int
 
 	ContinentCount              int
 	OceanMargin                 float64
@@ -53,10 +54,11 @@ func DefaultConfig() Config {
 	return Config{
 		Seed: "talkenson",
 
-		Width:  2048,
-		Height: 2048,
+		Width:   4096,
+		Height:  4096,
+		Workers: 16,
 
-		ContinentCount:              3,
+		ContinentCount:              5,
 		OceanMargin:                 0.12,
 		ContinentSpacing:            0.1,
 		ContinentPlacementAttempts:  90,
@@ -84,12 +86,12 @@ func DefaultConfig() Config {
 		ShallowWaterMaxWidthMax: 5,
 		ShallowWaterScale:       0.045,
 
-		RiverCount:           12,
-		MinRiverLength:       20,
+		RiverCount:           200,
+		MinRiverLength:       60,
 		RiverMeanderScale:    0.055,
 		RiverMeanderStrength: 0.18,
 		RiverMinWidth:        1,
-		RiverMaxWidth:        4,
+		RiverMaxWidth:        6,
 
 		RockScale:         0.035,
 		RockThreshold:     0.68,

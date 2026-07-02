@@ -36,3 +36,38 @@ func TestSaveLoadBinaryRoundTrip(t *testing.T) {
 		t.Fatalf("stats mismatch: got %+v, want %+v", loaded.Stats, generated.Stats)
 	}
 }
+
+func TestGenerateWorkersIsDeterministic(t *testing.T) {
+	config := DefaultConfig()
+	config.Width = 96
+	config.Height = 96
+	config.ContinentCount = 2
+	config.RiverCount = 4
+
+	serialConfig := config
+	serialConfig.Workers = 1
+	serial, err := Generate(serialConfig)
+	if err != nil {
+		t.Fatalf("serial generate: %v", err)
+	}
+
+	parallelConfig := config
+	parallelConfig.Workers = 4
+	parallel, err := Generate(parallelConfig)
+	if err != nil {
+		t.Fatalf("parallel generate: %v", err)
+	}
+
+	var serialBuf bytes.Buffer
+	if err := SaveBinary(&serialBuf, serial); err != nil {
+		t.Fatalf("serial save: %v", err)
+	}
+	var parallelBuf bytes.Buffer
+	if err := SaveBinary(&parallelBuf, parallel); err != nil {
+		t.Fatalf("parallel save: %v", err)
+	}
+
+	if !bytes.Equal(serialBuf.Bytes(), parallelBuf.Bytes()) {
+		t.Fatalf("parallel generation changed map output")
+	}
+}
