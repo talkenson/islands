@@ -34,6 +34,7 @@ type Hub struct {
 	clients map[uint64]*Client
 	history []Event
 	limit   int
+	closed  bool
 }
 
 func NewHub() *Hub {
@@ -56,6 +57,10 @@ func (h *Hub) Subscribe(actorID, worldID uint64, interest map[world.ChunkCoord]s
 		Interest: copyInterest(interest),
 		Events:   events,
 		events:   events,
+	}
+	if h.closed {
+		close(events)
+		return client
 	}
 	h.clients[client.ID] = client
 	return client
@@ -85,6 +90,9 @@ func (h *Hub) SetActorInterest(worldID, actorID uint64, interest map[world.Chunk
 func (h *Hub) Publish(event Event) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.closed {
+		return
+	}
 
 	h.history = append(h.history, event)
 	if len(h.history) > h.limit {
@@ -99,6 +107,19 @@ func (h *Hub) Publish(event Event) {
 		case client.events <- event:
 		default:
 		}
+	}
+}
+
+func (h *Hub) Close() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return
+	}
+	h.closed = true
+	for id, client := range h.clients {
+		delete(h.clients, id)
+		close(client.events)
 	}
 }
 

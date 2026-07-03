@@ -8,6 +8,24 @@ export interface Actor {
   y: number;
 }
 
+export interface InventoryItem {
+  item_id: number;
+  name: string;
+  amount: number;
+  quality?: number;
+}
+
+export interface InventoryItemWire {
+  ItemID?: number;
+  item_id?: number;
+  Name?: string;
+  name?: string;
+  Amount?: number;
+  amount?: number;
+  Quality?: number;
+  quality?: number;
+}
+
 export interface ActorWire {
   ID?: number;
   id?: number;
@@ -23,6 +41,7 @@ export interface LoginResponse {
   token: string;
   user_id: number;
   actors: ActorWire[];
+  inventory?: InventoryItemWire[];
   worlds: Array<{ id: number }>;
 }
 
@@ -52,6 +71,7 @@ export interface ActionResult {
   accepted?: boolean;
   client_action_id?: string;
   actor?: ActorWire;
+  inventory?: InventoryItemWire[];
   event_id?: number;
   code?: string;
   message?: string;
@@ -67,6 +87,7 @@ export interface HelloPayload {
   actor_id: number;
   world_id: number;
   actor?: ActorWire;
+  inventory?: InventoryItemWire[];
   render_config?: RenderConfig;
 }
 

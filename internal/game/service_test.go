@@ -2,10 +2,14 @@ package game
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"islands/internal/mapgen"
 	"islands/internal/realtime"
+	"islands/internal/storage"
 	"islands/internal/world"
 )
 
@@ -92,5 +96,101 @@ func TestMovePublishesSnapshotsForNewVisibleChunks(t *testing.T) {
 
 	if received[0] != "entity_patch" || received[1] != "chunk_snapshot" {
 		t.Fatalf("events: got %v, want [entity_patch chunk_snapshot]", received)
+	}
+}
+
+func TestHarvestPersistsThroughFileStoreRestart(t *testing.T) {
+	dir := t.TempDir()
+	mapPath := filepath.Join(dir, "world.islmap")
+	coord, index := world.ToChunkCoord(DemoActorStartX, DemoActorStartY)
+	writeGameTestMap(t, mapPath, coord, index, 3)
+
+	store := storage.NewFileStore(mapPath, "")
+	state, err := store.LoadWorld(context.Background())
+	if err != nil {
+		t.Fatalf("load world: %v", err)
+	}
+	service := NewService(realtime.NewHub(), realtime.Config{VisibleChunkRadius: 1})
+	service.SetStore(store)
+	if err := service.LoadWorld(1, state); err != nil {
+		t.Fatalf("load service world: %v", err)
+	}
+	service.SeedDemoActor(1)
+
+	if _, err := service.ApplyAction(context.Background(), 1, 1, ActionRequest{ActionType: "harvest"}); err != nil {
+		t.Fatalf("harvest: %v", err)
+	}
+
+	restarted := storage.NewFileStore(mapPath, "")
+	loaded, err := restarted.LoadWorld(context.Background())
+	if err != nil {
+		t.Fatalf("reload world: %v", err)
+	}
+	if got := loaded.Chunks[coord].Stock[index]; got != 2 {
+		t.Fatalf("reloaded stock: got %d, want 2", got)
+	}
+	if len(loaded.Players.Stacks) != 1 || loaded.Players.Stacks[0].ItemID != ItemWood || loaded.Players.Stacks[0].Amount != 1 {
+		t.Fatalf("reloaded inventory: got %+v", loaded.Players.Stacks)
+	}
+}
+
+func TestMovePersistsActorThroughFileStoreRestart(t *testing.T) {
+	dir := t.TempDir()
+	mapPath := filepath.Join(dir, "world.islmap")
+	coord, index := world.ToChunkCoord(DemoActorStartX, DemoActorStartY)
+	writeGameTestMap(t, mapPath, coord, index, 3)
+
+	store := storage.NewFileStore(mapPath, "")
+	state, err := store.LoadWorld(context.Background())
+	if err != nil {
+		t.Fatalf("load world: %v", err)
+	}
+	service := NewService(realtime.NewHub(), realtime.Config{VisibleChunkRadius: 1})
+	service.SetStore(store)
+	if err := service.LoadWorld(1, state); err != nil {
+		t.Fatalf("load service world: %v", err)
+	}
+	service.SeedDemoActor(1)
+
+	if _, err := service.ApplyAction(context.Background(), 1, 1, ActionRequest{ActionType: "move", X: DemoActorStartX + 5, Y: DemoActorStartY - 2}); err != nil {
+		t.Fatalf("move: %v", err)
+	}
+
+	restarted := storage.NewFileStore(mapPath, "")
+	loaded, err := restarted.LoadWorld(context.Background())
+	if err != nil {
+		t.Fatalf("reload world: %v", err)
+	}
+	act := loaded.Players.Actors[1]
+	if act == nil {
+		t.Fatalf("actor was not persisted")
+	}
+	if act.X != DemoActorStartX+5 || act.Y != DemoActorStartY-2 {
+		t.Fatalf("actor position: got %d,%d", act.X, act.Y)
+	}
+}
+
+func writeGameTestMap(t *testing.T, path string, coord world.ChunkCoord, index uint16, stock uint16) {
+	t.Helper()
+	ch := world.NewChunk(coord.X, coord.Y)
+	ch.Stock[index] = stock
+	m := &mapgen.Map{
+		Width:  2048,
+		Height: 2048,
+		Config: mapgen.Config{Seed: "game-test"},
+		Chunks: map[world.ChunkCoord]*world.Chunk{
+			coord: ch,
+		},
+	}
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create map: %v", err)
+	}
+	if err := mapgen.SaveBinary(file, m); err != nil {
+		_ = file.Close()
+		t.Fatalf("save map: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close map: %v", err)
 	}
 }

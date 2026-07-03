@@ -52,10 +52,11 @@ type loginRequest struct {
 }
 
 type loginResponse struct {
-	Token  string     `json:"token"`
-	UserID uint64     `json:"user_id"`
-	Actors []actorRef `json:"actors"`
-	Worlds []worldRef `json:"worlds"`
+	Token     string               `json:"token"`
+	UserID    uint64               `json:"user_id"`
+	Actors    []actorRef           `json:"actors"`
+	Inventory []game.InventoryItem `json:"inventory"`
+	Worlds    []worldRef           `json:"worlds"`
 }
 
 type actorRef struct {
@@ -97,11 +98,17 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeGameError(w, err)
 		return
 	}
+	inventory, err := s.game.Inventory(r.Context(), req.WorldID, req.ActorID)
+	if err != nil {
+		writeGameError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, loginResponse{
-		Token:  token,
-		UserID: req.UserID,
-		Actors: []actorRef{{ID: req.ActorID, WorldID: req.WorldID, X: act.X, Y: act.Y}},
-		Worlds: []worldRef{{ID: req.WorldID}},
+		Token:     token,
+		UserID:    req.UserID,
+		Actors:    []actorRef{{ID: req.ActorID, WorldID: req.WorldID, X: act.X, Y: act.Y}},
+		Inventory: inventory,
+		Worlds:    []worldRef{{ID: req.WorldID}},
 	})
 }
 
@@ -135,6 +142,11 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		writeGameError(w, err)
 		return
 	}
+	inventory, err := s.game.Inventory(r.Context(), worldID, claims.ActorID)
+	if err != nil {
+		writeGameError(w, err)
+		return
+	}
 	client := s.hub.Subscribe(claims.ActorID, worldID, interest)
 	defer s.hub.Unsubscribe(client.ID)
 
@@ -146,6 +158,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		"actor_id":      claims.ActorID,
 		"world_id":      worldID,
 		"actor":         act,
+		"inventory":     inventory,
 		"render_config": mapgen.DefaultRenderConfig(s.game.WorldRenderSeed(worldID)),
 	}})
 	for _, snapshot := range s.game.ChunkSnapshots(r.Context(), worldID, interest) {

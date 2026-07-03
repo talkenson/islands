@@ -1,5 +1,13 @@
 import { CHUNK_SIZE } from "./config";
-import type { Actor, ActorWire, ChunkPosition, ChunkSnapshot, ChunkSnapshotWire } from "./types";
+import type {
+  Actor,
+  ActorWire,
+  ChunkPosition,
+  ChunkSnapshot,
+  ChunkSnapshotWire,
+  InventoryItem,
+  InventoryItemWire,
+} from "./types";
 
 export function chunkKey(cx: number, cy: number): string {
   return `${cx},${cy}`;
@@ -12,6 +20,17 @@ export function normalizeActor(actor: ActorWire, fallbackWorldID: number): Actor
     x: actor.X ?? actor.x ?? 0,
     y: actor.Y ?? actor.y ?? 0,
   };
+}
+
+export function normalizeInventory(items: InventoryItemWire[] | undefined): InventoryItem[] {
+  return (items || [])
+    .map((item) => ({
+      item_id: item.ItemID ?? item.item_id ?? 0,
+      name: item.Name || item.name || "unknown",
+      amount: item.Amount ?? item.amount ?? 0,
+      quality: item.Quality ?? item.quality ?? 0,
+    }))
+    .filter((item) => item.item_id > 0 && item.amount > 0);
 }
 
 export function normalizeChunk(data: ChunkSnapshotWire): ChunkSnapshot {

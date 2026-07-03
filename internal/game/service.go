@@ -6,7 +6,9 @@ import (
 	"sync"
 
 	"islands/internal/actor"
+	"islands/internal/inventory"
 	"islands/internal/realtime"
+	"islands/internal/storage"
 	"islands/internal/world"
 )
 
@@ -20,11 +22,15 @@ var (
 const (
 	DemoActorStartX int32 = 900
 	DemoActorStartY int32 = 1900
+
+	ItemWood inventory.ItemID = 1
 )
 
 type Service struct {
 	mu           sync.Mutex
 	actors       map[actor.ID]*actor.Actor
+	inventories  map[inventory.ID]*inventory.Inventory
+	stacks       map[inventory.ID]map[inventory.ItemID]*inventory.Stack
 	chunks       map[uint64]map[world.ChunkCoord]*world.Chunk
 	loadedWorlds map[uint64]bool
 	renderSeeds  map[uint64]string
@@ -32,6 +38,7 @@ type Service struct {
 	nextID       uint64
 	hub          *realtime.Hub
 	config       realtime.Config
+	store        storage.Store
 }
 
 func NewService(hub *realtime.Hub, config realtime.Config) *Service {
@@ -40,6 +47,8 @@ func NewService(hub *realtime.Hub, config realtime.Config) *Service {
 	}
 	return &Service{
 		actors:       make(map[actor.ID]*actor.Actor),
+		inventories:  make(map[inventory.ID]*inventory.Inventory),
+		stacks:       make(map[inventory.ID]map[inventory.ItemID]*inventory.Stack),
 		chunks:       make(map[uint64]map[world.ChunkCoord]*world.Chunk),
 		loadedWorlds: make(map[uint64]bool),
 		renderSeeds:  make(map[uint64]string),
@@ -48,11 +57,17 @@ func NewService(hub *realtime.Hub, config realtime.Config) *Service {
 	}
 }
 
+func (s *Service) SetStore(store storage.Store) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.store = store
+}
+
 func (s *Service) SeedDemoWorld(worldID uint64) actor.Actor {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	act := seedDemoActorLocked(s.actors, worldID)
+	act := s.seedDemoActorLocked(worldID)
 	coord, _ := world.ToChunkCoord(act.X, act.Y)
 	s.ensureChunkLocked(worldID, coord)
 	s.renderSeeds[worldID] = "demo"
@@ -62,7 +77,21 @@ func (s *Service) SeedDemoWorld(worldID uint64) actor.Actor {
 func (s *Service) SeedDemoActor(worldID uint64) actor.Actor {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return seedDemoActorLocked(s.actors, worldID)
+	return s.seedDemoActorLocked(worldID)
+}
+
+func (s *Service) LoadWorld(worldID uint64, state storage.WorldState) error {
+	if err := s.LoadChunks(worldID, state.Chunks); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loadPlayersLocked(state.Players)
+	s.renderSeeds[worldID] = state.Seed
+	if state.Tick > s.tick {
+		s.tick = state.Tick
+	}
+	return nil
 }
 
 func (s *Service) LoadChunks(worldID uint64, chunks map[world.ChunkCoord]*world.Chunk) error {
@@ -94,6 +123,12 @@ func (s *Service) LoadChunks(worldID uint64, chunks map[world.ChunkCoord]*world.
 	return nil
 }
 
+func (s *Service) WorldChunks(worldID uint64) map[world.ChunkCoord]*world.Chunk {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return copyChunks(s.chunks[worldID])
+}
+
 func (s *Service) SetWorldRenderSeed(worldID uint64, seed string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -117,6 +152,24 @@ func (s *Service) Actor(ctx context.Context, worldID, actorID uint64) (actor.Act
 		return actor.Actor{}, ErrForbidden
 	}
 	return *act, nil
+}
+
+type InventoryItem struct {
+	ItemID  inventory.ItemID `json:"item_id"`
+	Name    string           `json:"name"`
+	Amount  uint32           `json:"amount"`
+	Quality uint8            `json:"quality"`
+}
+
+func (s *Service) Inventory(ctx context.Context, worldID, actorID uint64) ([]InventoryItem, error) {
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	act, ok := s.actors[actor.ID(actorID)]
+	if !ok || act.WorldID != worldID {
+		return nil, ErrForbidden
+	}
+	return s.inventorySnapshotLocked(*act), nil
 }
 
 func (s *Service) VisibleChunksForActor(ctx context.Context, worldID, actorID uint64) (map[world.ChunkCoord]struct{}, error) {
@@ -168,10 +221,11 @@ type ActionRequest struct {
 }
 
 type ActionResult struct {
-	Accepted       bool        `json:"accepted"`
-	ClientActionID string      `json:"client_action_id,omitempty"`
-	Actor          actor.Actor `json:"actor"`
-	EventID        uint64      `json:"event_id"`
+	Accepted       bool            `json:"accepted"`
+	ClientActionID string          `json:"client_action_id,omitempty"`
+	Actor          actor.Actor     `json:"actor"`
+	Inventory      []InventoryItem `json:"inventory"`
+	EventID        uint64          `json:"event_id"`
 }
 
 func (s *Service) ApplyAction(ctx context.Context, worldID, actorID uint64, req ActionRequest) (ActionResult, error) {
@@ -185,9 +239,22 @@ func (s *Service) ApplyAction(ctx context.Context, worldID, actorID uint64, req 
 	switch req.ActionType {
 	case "move":
 		oldCenter, _ := world.ToChunkCoord(act.X, act.Y)
+		previousX := act.X
+		previousY := act.Y
+		previousTick := s.tick
 		act.X = req.X
 		act.Y = req.Y
 		s.tick++
+		store := s.store
+		if store != nil {
+			if err := store.SavePlayerState(ctx, s.playerStateLocked(), s.tick); err != nil {
+				act.X = previousX
+				act.Y = previousY
+				s.tick = previousTick
+				s.mu.Unlock()
+				return ActionResult{}, err
+			}
+		}
 		eventID := s.nextEventIDLocked()
 		center, _ := world.ToChunkCoord(act.X, act.Y)
 		interest := realtime.VisibleChunks(center, s.config.VisibleChunkRadius)
@@ -195,7 +262,7 @@ func (s *Service) ApplyAction(ctx context.Context, worldID, actorID uint64, req 
 		newChunks := interestDifference(interest, oldInterest)
 		changed := interestList(interest)
 		snapshots := s.chunkSnapshotsLocked(worldID, newChunks)
-		result := ActionResult{Accepted: true, ClientActionID: req.ClientActionID, Actor: *act, EventID: eventID}
+		result := ActionResult{Accepted: true, ClientActionID: req.ClientActionID, Actor: *act, Inventory: s.inventorySnapshotLocked(*act), EventID: eventID}
 		s.mu.Unlock()
 		s.hub.SetActorInterest(worldID, actorID, interest)
 		s.hub.Publish(realtime.Event{ID: eventID, Type: "entity_patch", WorldID: worldID, ChangedChunks: changed, Data: result})
@@ -224,12 +291,36 @@ func (s *Service) ApplyAction(ctx context.Context, worldID, actorID uint64, req 
 			s.mu.Unlock()
 			return ActionResult{}, ErrConflict
 		}
+		previousStock := ch.Stock[index]
+		previousDirty := ch.Dirty
+		previousTick := s.tick
+		previousStack, hadStack := s.stackLocked(act.PocketInventoryID, ItemWood)
 		ch.Stock[index]--
+		s.addStackLocked(act.PocketInventoryID, ItemWood, 1)
 		ch.Dirty = true
 		s.tick++
+		store := s.store
+		if store != nil {
+			if err := store.SaveDirtyChunk(ctx, ch, s.tick); err != nil {
+				ch.Stock[index] = previousStock
+				ch.Dirty = previousDirty
+				s.restoreStackLocked(act.PocketInventoryID, ItemWood, previousStack, hadStack)
+				s.tick = previousTick
+				s.mu.Unlock()
+				return ActionResult{}, err
+			}
+			if err := store.SavePlayerState(ctx, s.playerStateLocked(), s.tick); err != nil {
+				ch.Stock[index] = previousStock
+				ch.Dirty = previousDirty
+				s.restoreStackLocked(act.PocketInventoryID, ItemWood, previousStack, hadStack)
+				s.tick = previousTick
+				s.mu.Unlock()
+				return ActionResult{}, err
+			}
+		}
 		eventID := s.nextEventIDLocked()
 		snapshot := snapshotChunk(ch, s.tick)
-		result := ActionResult{Accepted: true, ClientActionID: req.ClientActionID, Actor: *act, EventID: eventID}
+		result := ActionResult{Accepted: true, ClientActionID: req.ClientActionID, Actor: *act, Inventory: s.inventorySnapshotLocked(*act), EventID: eventID}
 		s.mu.Unlock()
 		s.hub.Publish(realtime.Event{
 			ID:            eventID,
@@ -270,10 +361,194 @@ func (s *Service) chunkLocked(worldID uint64, coord world.ChunkCoord) *world.Chu
 	return byWorld[coord]
 }
 
-func seedDemoActorLocked(actors map[actor.ID]*actor.Actor, worldID uint64) actor.Actor {
+func (s *Service) seedDemoActorLocked(worldID uint64) actor.Actor {
+	if existing, ok := s.actors[1]; ok && existing.WorldID == worldID {
+		if existing.PocketInventoryID == 0 {
+			existing.PocketInventoryID = 1
+		}
+		s.ensurePocketInventoryLocked(*existing)
+		return *existing
+	}
 	act := actor.Actor{ID: 1, WorldID: worldID, X: DemoActorStartX, Y: DemoActorStartY, PocketInventoryID: 1}
-	actors[act.ID] = &act
+	s.actors[act.ID] = &act
+	s.ensurePocketInventoryLocked(act)
 	return act
+}
+
+func (s *Service) Shutdown(ctx context.Context) error {
+	s.mu.Lock()
+	store := s.store
+	state := s.playerStateLocked()
+	tick := s.tick
+	s.mu.Unlock()
+	if store == nil {
+		return nil
+	}
+	if err := store.SavePlayerState(ctx, state, tick); err != nil {
+		return err
+	}
+	return store.Flush(ctx)
+}
+
+func (s *Service) loadPlayersLocked(state storage.PlayerState) {
+	if len(state.Actors) > 0 {
+		s.actors = make(map[actor.ID]*actor.Actor, len(state.Actors))
+		for id, act := range state.Actors {
+			if act == nil {
+				continue
+			}
+			copied := *act
+			s.actors[id] = &copied
+		}
+	}
+	if len(state.Inventories) > 0 {
+		s.inventories = make(map[inventory.ID]*inventory.Inventory, len(state.Inventories))
+		for id, inv := range state.Inventories {
+			if inv == nil {
+				continue
+			}
+			copied := *inv
+			s.inventories[id] = &copied
+		}
+	}
+	if len(state.Stacks) > 0 {
+		s.stacks = make(map[inventory.ID]map[inventory.ItemID]*inventory.Stack)
+		for _, stack := range state.Stacks {
+			copied := stack
+			byItem := s.stacks[stack.InventoryID]
+			if byItem == nil {
+				byItem = make(map[inventory.ItemID]*inventory.Stack)
+				s.stacks[stack.InventoryID] = byItem
+			}
+			byItem[stack.ItemID] = &copied
+		}
+	}
+	for _, act := range s.actors {
+		if act.PocketInventoryID == 0 {
+			act.PocketInventoryID = uint64(act.ID)
+		}
+		s.ensurePocketInventoryLocked(*act)
+	}
+}
+
+func (s *Service) playerStateLocked() storage.PlayerState {
+	state := storage.PlayerState{
+		Actors:      make(map[actor.ID]*actor.Actor, len(s.actors)),
+		Inventories: make(map[inventory.ID]*inventory.Inventory, len(s.inventories)),
+	}
+	for id, act := range s.actors {
+		if act == nil {
+			continue
+		}
+		copied := *act
+		state.Actors[id] = &copied
+	}
+	for id, inv := range s.inventories {
+		if inv == nil {
+			continue
+		}
+		copied := *inv
+		state.Inventories[id] = &copied
+	}
+	for _, byItem := range s.stacks {
+		for _, stack := range byItem {
+			if stack != nil && stack.Amount > 0 {
+				state.Stacks = append(state.Stacks, *stack)
+			}
+		}
+	}
+	return state
+}
+
+func (s *Service) ensurePocketInventoryLocked(act actor.Actor) {
+	invID := inventory.ID(act.PocketInventoryID)
+	if invID == 0 {
+		return
+	}
+	if _, ok := s.inventories[invID]; ok {
+		return
+	}
+	s.inventories[invID] = &inventory.Inventory{
+		ID:        invID,
+		WorldID:   act.WorldID,
+		Kind:      inventory.KindPocket,
+		OwnerType: inventory.OwnerActor,
+		OwnerID:   uint64(act.ID),
+		MaxWeight: 100,
+		MaxVolume: 100,
+	}
+}
+
+func (s *Service) addStackLocked(invID uint64, itemID inventory.ItemID, amount uint32) {
+	id := inventory.ID(invID)
+	byItem := s.stacks[id]
+	if byItem == nil {
+		byItem = make(map[inventory.ItemID]*inventory.Stack)
+		s.stacks[id] = byItem
+	}
+	stack := byItem[itemID]
+	if stack == nil {
+		stack = &inventory.Stack{InventoryID: id, ItemID: itemID}
+		byItem[itemID] = stack
+	}
+	stack.Amount += amount
+}
+
+func (s *Service) stackLocked(invID uint64, itemID inventory.ItemID) (inventory.Stack, bool) {
+	byItem := s.stacks[inventory.ID(invID)]
+	if byItem == nil || byItem[itemID] == nil {
+		return inventory.Stack{}, false
+	}
+	return *byItem[itemID], true
+}
+
+func (s *Service) restoreStackLocked(invID uint64, itemID inventory.ItemID, previous inventory.Stack, hadStack bool) {
+	id := inventory.ID(invID)
+	byItem := s.stacks[id]
+	if !hadStack {
+		if byItem != nil {
+			delete(byItem, itemID)
+			if len(byItem) == 0 {
+				delete(s.stacks, id)
+			}
+		}
+		return
+	}
+	if byItem == nil {
+		byItem = make(map[inventory.ItemID]*inventory.Stack)
+		s.stacks[id] = byItem
+	}
+	copied := previous
+	byItem[itemID] = &copied
+}
+
+func (s *Service) inventorySnapshotLocked(act actor.Actor) []InventoryItem {
+	byItem := s.stacks[inventory.ID(act.PocketInventoryID)]
+	if len(byItem) == 0 {
+		return nil
+	}
+	out := make([]InventoryItem, 0, len(byItem))
+	for _, stack := range byItem {
+		if stack == nil || stack.Amount == 0 {
+			continue
+		}
+		out = append(out, InventoryItem{
+			ItemID:  stack.ItemID,
+			Name:    itemName(stack.ItemID),
+			Amount:  stack.Amount,
+			Quality: stack.Quality,
+		})
+	}
+	return out
+}
+
+func itemName(itemID inventory.ItemID) string {
+	switch itemID {
+	case ItemWood:
+		return "wood"
+	default:
+		return "unknown"
+	}
 }
 
 func (s *Service) nextEventIDLocked() uint64 {
@@ -316,4 +591,22 @@ func interestDifference(next, previous map[world.ChunkCoord]struct{}) map[world.
 		}
 	}
 	return out
+}
+
+func copyChunks(chunks map[world.ChunkCoord]*world.Chunk) map[world.ChunkCoord]*world.Chunk {
+	copied := make(map[world.ChunkCoord]*world.Chunk, len(chunks))
+	for coord, ch := range chunks {
+		if ch == nil {
+			continue
+		}
+		next := world.NewChunk(ch.X, ch.Y)
+		copy(next.Base, ch.Base)
+		copy(next.Water, ch.Water)
+		copy(next.Cover, ch.Cover)
+		copy(next.Stock, ch.Stock)
+		copy(next.Meta, ch.Meta)
+		next.Dirty = ch.Dirty
+		copied[coord] = next
+	}
+	return copied
 }

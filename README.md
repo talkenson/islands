@@ -84,6 +84,30 @@ GOCACHE=/home/talk/work/islands/.gocache go run ./cmd/islands \
 Use `-visible-chunk-radius 2` for a `5x5` live chunk window. If `-world-map` is omitted, the server starts with a small in-memory demo world.
 `world.islmap` stores the generator seed used by the frontend render palette/noise.
 
+When `-world-map` is provided, runtime chunk changes are appended to a journal next to the map file:
+
+```text
+artifacts/generated/world.journal
+```
+
+Pass `-world-journal path/to/world.journal` to choose a different journal path.
+Actor position and pocket inventory are saved next to the map too:
+
+```text
+artifacts/generated/world.players.json
+```
+
+Pass `-world-players path/to/world.players.json` to choose a different player-state path.
+When the server receives Ctrl+C, it prints a shutdown message, saves player state, flushes storage, closes realtime streams, and then stops HTTP.
+
+To compact the journal back into the base map and start a fresh empty journal:
+
+```bash
+GOCACHE=/home/talk/work/islands/.gocache go run ./cmd/islands \
+  -world-map artifacts/generated/world.islmap \
+  -compact-world
+```
+
 ## Frontend
 
 The client is a Solid + Vite app in `client/`.

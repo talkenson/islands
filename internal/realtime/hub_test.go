@@ -36,3 +36,20 @@ func TestHubPublishesOnlyIntersectingChunkEvents(t *testing.T) {
 	case <-time.After(20 * time.Millisecond):
 	}
 }
+
+func TestHubCloseClosesSubscribers(t *testing.T) {
+	hub := NewHub()
+	client := hub.Subscribe(1, 1, map[world.ChunkCoord]struct{}{{X: 0, Y: 0}: {}})
+
+	hub.Close()
+	hub.Close()
+
+	select {
+	case _, ok := <-client.Events:
+		if ok {
+			t.Fatalf("client channel is still open")
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("client channel was not closed")
+	}
+}

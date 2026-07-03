@@ -11,6 +11,7 @@ import {
   chunkKey,
   normalizeActor,
   normalizeChunk,
+  normalizeInventory,
 } from "./chunks";
 import { MAX_ZOOM, MIN_ZOOM } from "./config";
 import { MapRenderer } from "./mapRenderer";
@@ -21,6 +22,7 @@ import type {
   ChunkSnapshotWire,
   EntityPatchPayload,
   HelloPayload,
+  InventoryItem,
   StatusKind,
 } from "./types";
 
@@ -56,9 +58,13 @@ export function App() {
   const [busy, setBusy] = createSignal(false);
   const [hudHidden, setHudHidden] = createSignal(false);
   const [events, setEvents] = createSignal<LogEvent[]>([]);
+  const [inventory, setInventory] = createSignal<InventoryItem[]>([]);
 
   const actorPosition = createMemo(() => `${actor().x}, ${actor().y}`);
   const subtitle = createMemo(() => `Пользователь #${actor().id}`);
+  const inventoryTotal = createMemo(() =>
+    inventory().reduce((sum, item) => sum + item.amount, 0),
+  );
 
   onMount(() => {
     renderer = new MapRenderer(canvasRef);
@@ -118,6 +124,7 @@ export function App() {
       if (data.actors[0]) {
         setActor(normalizeActor(data.actors[0], worldID()));
       }
+      setInventory(normalizeInventory(data.inventory));
       addEvent("Вход выполнен", `world=${worldID()}`);
       refreshStats();
       renderer?.resize(actor(), chunks);
@@ -136,7 +143,7 @@ export function App() {
       .then(() => setStatus({ kind: "idle", text: "отключено" }))
       .catch((err: unknown) => {
         if (!isAbortError(err)) {
-          setStatus({ kind: "error", text: "стрим упал" });
+          setStatus({ kind: "error", text: "сервер недоступен" });
           addEvent("Стрим", errorMessage(err));
         }
       });
@@ -156,6 +163,7 @@ export function App() {
         setActor(normalizeActor(hello.actor, worldID()));
         redraw();
       }
+      setInventory(normalizeInventory(hello.inventory));
       addEvent("Стрим открыт", `actor=${hello.actor_id}`);
       return;
     }
@@ -170,6 +178,7 @@ export function App() {
       if (patch?.actor) {
         const nextActor = normalizeActor(patch.actor, worldID());
         setActor(nextActor);
+        setInventory(normalizeInventory(patch.inventory));
         addEvent(
           "Перемещение",
           `x=${nextActor.x}, y=${nextActor.y}, event=${id || patch.event_id || 0}`,
@@ -198,6 +207,9 @@ export function App() {
       }
       if (result.data.actor) {
         setActor(normalizeActor(result.data.actor, worldID()));
+      }
+      if (result.data.inventory) {
+        setInventory(normalizeInventory(result.data.inventory));
       }
       if (actionType === "harvest") {
         addEvent("Сбор", `event=${result.data.event_id || 0}`);
@@ -283,7 +295,28 @@ export function App() {
                 <span>Запас клетки</span>
                 <strong>{cellStock()}</strong>
               </div>
+              <div>
+                <span>Инвентарь</span>
+                <strong>{inventoryTotal()}</strong>
+              </div>
             </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-title">
+              <span>Карман</span>
+              <strong>{inventory().length}</strong>
+            </div>
+            <ol class="inventory-list">
+              <For each={inventory()} fallback={<li>пусто</li>}>
+                {(item) => (
+                  <li>
+                    <b>{item.name}</b>
+                    <span>{item.amount}</span>
+                  </li>
+                )}
+              </For>
+            </ol>
           </section>
 
           <section class="panel controls">
