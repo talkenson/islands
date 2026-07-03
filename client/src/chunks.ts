@@ -1,0 +1,52 @@
+import { CHUNK_SIZE } from "./config";
+import type { Actor, ActorWire, ChunkPosition, ChunkSnapshot, ChunkSnapshotWire } from "./types";
+
+export function chunkKey(cx: number, cy: number): string {
+  return `${cx},${cy}`;
+}
+
+export function normalizeActor(actor: ActorWire, fallbackWorldID: number): Actor {
+  return {
+    id: actor.ID || actor.id || 1,
+    world_id: actor.WorldID || actor.world_id || fallbackWorldID,
+    x: actor.X ?? actor.x ?? 0,
+    y: actor.Y ?? actor.y ?? 0,
+  };
+}
+
+export function normalizeChunk(data: ChunkSnapshotWire): ChunkSnapshot {
+  return {
+    cx: data.cx,
+    cy: data.cy,
+    base: data.base || [],
+    water: decodeByteLayer(data.water),
+    cover: data.cover || [],
+    stock: data.stock || [],
+    meta: decodeByteLayer(data.meta),
+    updatedTick: data.updated_tick || 0,
+  };
+}
+
+export function actorChunkAndIndex(actor: Actor): ChunkPosition {
+  const cx = Math.floor(actor.x / CHUNK_SIZE);
+  const cy = Math.floor(actor.y / CHUNK_SIZE);
+  const lx = ((actor.x % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+  const ly = ((actor.y % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+  return { cx, cy, index: ly * CHUNK_SIZE + lx };
+}
+
+function decodeByteLayer(value: number[] | string | undefined): Uint8Array {
+  if (!value) {
+    return new Uint8Array();
+  }
+  if (Array.isArray(value)) {
+    return Uint8Array.from(value);
+  }
+
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}

@@ -84,6 +84,27 @@ GOCACHE=/home/talk/work/islands/.gocache go run ./cmd/islands \
 Use `-visible-chunk-radius 2` for a `5x5` live chunk window. If `-world-map` is omitted, the server starts with a small in-memory demo world.
 `world.islmap` stores the generator seed used by the frontend render palette/noise.
 
+## Frontend
+
+The client is a Solid + Vite app in `client/`.
+
+For development, start the Go backend on `:8080`, then run:
+
+```bash
+cd client
+npm install
+npm run dev
+```
+
+For the Go server to serve the built frontend directly:
+
+```bash
+cd client
+npm run build
+```
+
+The backend serves `client/dist`; use Vite while developing unbuilt TSX sources.
+
 ## Tests
 
 Run tests with a local Go build cache:
