@@ -69,6 +69,7 @@ export interface CellMeta {
   stock: number;
   height: number;
   temperature: number;
+  temperatureRaw: number;
   updatedTick: number;
 }
 
@@ -94,6 +95,8 @@ export function readCellMeta(
   const elevation = (base >> 9) & 31;
   const waterKind = water & 15;
   const coverKind = cover & 255;
+  const temperatureRaw =
+    chunk.temperature.length > index ? chunk.temperature[index] || 0 : 0;
 
   return {
     cell,
@@ -112,8 +115,12 @@ export function readCellMeta(
     coverFlags: (cover >> 12) & 15,
     stock: chunk.stock[index] || 0,
     height: chunk.meta.length > index ? chunk.meta[index] || 0 : elevation,
-    temperature:
-      chunk.temperature.length > index ? chunk.temperature[index] || 0 : 0,
+    temperature: temperatureCelsius(temperatureRaw),
+    temperatureRaw,
     updatedTick: chunk.updatedTick,
   };
+}
+
+function temperatureCelsius(raw: number): number {
+  return Math.round((raw - 96) / 1.5);
 }

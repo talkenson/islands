@@ -452,7 +452,7 @@ export function App() {
                   </div>
                   <div>
                     <dt>Температура</dt>
-                    <dd>{selectedCellMeta()?.temperature}</dd>
+                    <dd>{selectedCellMeta()?.temperature} °C</dd>
                   </div>
                   <div>
                     <dt>Запас</dt>
