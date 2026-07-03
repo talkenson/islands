@@ -2,7 +2,6 @@ import type {
   ActionResult,
   ActionType,
   LoginResponse,
-  RealtimeEvent,
 } from "./types";
 
 interface ErrorPayload {
@@ -141,8 +140,7 @@ function handleSSE(
     return;
   }
   try {
-    const payload = JSON.parse(data.join("\n")) as RealtimeEvent;
-    onEvent(payload.type || event, payload.data, payload.id || id);
+    onEvent(event, JSON.parse(data.join("\n")) as unknown, id);
   } catch {
     onEvent("stream_error", { message: "invalid stream event" }, id);
   }

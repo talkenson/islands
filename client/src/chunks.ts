@@ -19,6 +19,12 @@ export function normalizeActor(actor: ActorWire, fallbackWorldID: number): Actor
     world_id: actor.WorldID || actor.world_id || fallbackWorldID,
     x: actor.X ?? actor.x ?? 0,
     y: actor.Y ?? actor.y ?? 0,
+    inventory_id:
+      actor.InventoryID ??
+      actor.inventory_id ??
+      actor.PocketInventoryID ??
+      actor.pocket_inventory_id ??
+      0,
   };
 }
 
@@ -37,10 +43,10 @@ export function normalizeChunk(data: ChunkSnapshotWire): ChunkSnapshot {
   return {
     cx: data.cx,
     cy: data.cy,
-    base: data.base || [],
+    base: decodeUint16Layer(data.base),
     water: decodeByteLayer(data.water),
-    cover: data.cover || [],
-    stock: data.stock || [],
+    cover: decodeUint16Layer(data.cover),
+    stock: decodeUint16Layer(data.stock),
     meta: decodeByteLayer(data.meta),
     temperature: decodeByteLayer(data.temperature),
     updatedTick: data.updated_tick || 0,
@@ -69,4 +75,20 @@ function decodeByteLayer(value: number[] | string | undefined): Uint8Array {
     bytes[i] = binary.charCodeAt(i);
   }
   return bytes;
+}
+
+function decodeUint16Layer(value: number[] | string | undefined): Uint16Array {
+  if (!value) {
+    return new Uint16Array();
+  }
+  if (Array.isArray(value)) {
+    return Uint16Array.from(value);
+  }
+
+  const binary = atob(value);
+  const out = new Uint16Array(Math.floor(binary.length / 2));
+  for (let i = 0; i < out.length; i++) {
+    out[i] = binary.charCodeAt(i * 2) | (binary.charCodeAt(i * 2 + 1) << 8);
+  }
+  return out;
 }

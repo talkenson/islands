@@ -24,12 +24,35 @@ import type {
   ChunkSnapshotWire,
   EntityPatchPayload,
   HelloPayload,
+  InventoryPatchPayload,
   InventoryItem,
   LogEvent,
   PanelID,
   StatusKind,
+  WorldTime,
   WorldCell,
 } from "./types";
+
+const DEFAULT_WORLD_TIME: WorldTime = {
+  world_time: 0,
+  day: 1,
+  phase: "late_night",
+  phase_progress: 0,
+  day_progress: 0,
+  day_length_seconds: 480,
+  world_seconds_per_real_second: 1,
+};
+
+const DAY_PHASES = [
+  "late_night",
+  "dawn",
+  "morning",
+  "day",
+  "afternoon",
+  "dusk",
+  "evening",
+  "night",
+] as const;
 
 export function App() {
   let canvasRef!: HTMLCanvasElement;
@@ -50,6 +73,7 @@ export function App() {
     world_id: 1,
     x: 900,
     y: 1900,
+    inventory_id: 1,
   });
   const [worldID, setWorldID] = createSignal(1);
   const [chunkCount, setChunkCount] = createSignal(0);
@@ -58,6 +82,7 @@ export function App() {
   const [hudHidden, setHudHidden] = createSignal(false);
   const [events, setEvents] = createSignal<LogEvent[]>([]);
   const [inventory, setInventory] = createSignal<InventoryItem[]>([]);
+  const [worldTime, setWorldTime] = createSignal<WorldTime>(DEFAULT_WORLD_TIME);
   const [hoveredCell, setHoveredCell] = createSignal<WorldCell | undefined>();
   const [selectedCell, setSelectedCell] = createSignal<WorldCell | undefined>();
   const [worldRevision, setWorldRevision] = createSignal(0);
@@ -80,14 +105,25 @@ export function App() {
     return cell ? `${cell.x}, ${cell.y}` : "-";
   });
   const subtitle = createMemo(() => `Пользователь #${actor().id}`);
+  const daySummary = createMemo(
+    () => `День ${worldTime().day}, ${phaseLabel(worldTime().phase)}`,
+  );
   const inventoryTotal = createMemo(() =>
     inventory().reduce((sum, item) => sum + item.amount, 0),
   );
 
   onMount(() => {
     renderer = new MapRenderer(canvasRef);
+    let lastClockUpdate = Date.now();
 
-    const resize = () => renderer?.resize(actor(), chunks);
+    const resize = () => renderer?.resize(actor(), chunks, worldTime());
+    const clock = window.setInterval(() => {
+      const now = Date.now();
+      const realSeconds = (now - lastClockUpdate) / 1000;
+      lastClockUpdate = now;
+      setWorldTime((current) => advanceWorldTime(current, realSeconds));
+      redraw();
+    }, 1000);
     const keydown = (event: KeyboardEvent) => {
       if (event.repeat || busy()) {
         return;
@@ -111,6 +147,7 @@ export function App() {
     onCleanup(() => {
       streamAbort?.abort();
       renderer?.destroy();
+      window.clearInterval(clock);
       window.removeEventListener("resize", resize);
       window.removeEventListener("keydown", keydown);
     });
@@ -131,7 +168,7 @@ export function App() {
 
   function redraw(): void {
     refreshStats();
-    renderer?.draw(actor(), chunks);
+    renderer?.draw(actor(), chunks, worldTime());
   }
 
   async function boot(): Promise<void> {
@@ -141,12 +178,12 @@ export function App() {
       token = data.token;
       setWorldID(data.worlds[0]?.id || 1);
       if (data.actors[0]) {
-        setActor(normalizeActor(data.actors[0], worldID()));
+        setActor(mergeActor(actor(), data.actors[0]));
       }
       setInventory(normalizeInventory(data.inventory));
       addEvent("Вход выполнен", `world=${worldID()}`);
       refreshStats();
-      renderer?.resize(actor(), chunks);
+      renderer?.resize(actor(), chunks, worldTime());
       startStream();
     } catch (err) {
       setStatus({ kind: "error", text: "ошибка входа" });
@@ -178,8 +215,11 @@ export function App() {
       if (hello.render_config) {
         renderer?.setRenderConfig(hello.render_config);
       }
+      if (hello.world_time) {
+        setWorldTime(normalizeWorldTime(hello.world_time));
+      }
       if (hello.actor) {
-        setActor(normalizeActor(hello.actor, worldID()));
+        setActor(mergeActor(actor(), hello.actor));
         redraw();
       }
       setInventory(normalizeInventory(hello.inventory));
@@ -193,27 +233,36 @@ export function App() {
       redraw();
       return;
     }
+    if (type === "world_time") {
+      setWorldTime(normalizeWorldTime(data as WorldTime));
+      redraw();
+      return;
+    }
     if (type === "entity_patch") {
       const patch = data as EntityPatchPayload | undefined;
       if (patch?.actor) {
         const previousActor = actor();
-        const nextActor = normalizeActor(patch.actor, worldID());
+        const nextActor = mergeActor(previousActor, patch.actor);
         setActor(nextActor);
-        setInventory(normalizeInventory(patch.inventory));
-        if (patch.action_type === "harvest") {
-          addEvent("Сбор", `event=${id || patch.event_id || 0}`);
-        } else if (
-          patch.action_type === "move" ||
+        if (
           previousActor.x !== nextActor.x ||
           previousActor.y !== nextActor.y
         ) {
           addEvent(
             "Перемещение",
-            `x=${nextActor.x}, y=${nextActor.y}, event=${id || patch.event_id || 0}`,
+            `x=${nextActor.x}, y=${nextActor.y}, event=${id}`,
           );
         }
       }
       redraw();
+      return;
+    }
+    if (type === "inventory_patch") {
+      const patch = data as InventoryPatchPayload | undefined;
+      if (!patch || patch.actor_id !== actor().id) {
+        return;
+      }
+      setInventory(normalizeInventory(patch.inventory));
       return;
     }
     if (type === "stream_error") {
@@ -239,13 +288,6 @@ export function App() {
         );
         return;
       }
-      if (result.data.actor) {
-        setActor(normalizeActor(result.data.actor, worldID()));
-      }
-      if (result.data.inventory) {
-        setInventory(normalizeInventory(result.data.inventory));
-      }
-      redraw();
     } catch (err) {
       setStatus({ kind: "error", text: "ошибка действия" });
       addEvent("Ошибка", errorMessage(err));
@@ -261,7 +303,14 @@ export function App() {
 
   function zoomCanvas(event: WheelEvent): void {
     event.preventDefault();
-    renderer?.zoom(event.deltaY, MIN_ZOOM, MAX_ZOOM, actor(), chunks);
+    renderer?.zoom(
+      event.deltaY,
+      MIN_ZOOM,
+      MAX_ZOOM,
+      actor(),
+      chunks,
+      worldTime(),
+    );
   }
 
   function trackHover(event: MouseEvent): void {
@@ -358,6 +407,10 @@ export function App() {
               <div>
                 <span>Инвентарь</span>
                 <strong>{inventoryTotal()}</strong>
+              </div>
+              <div>
+                <span>Время</span>
+                <strong>{daySummary()}</strong>
               </div>
             </>
           </Panel>
@@ -551,4 +604,68 @@ export function App() {
       </section>
     </main>
   );
+}
+
+function phaseLabel(phase: WorldTime["phase"]): string {
+  switch (phase) {
+    case "late_night":
+      return "глубокая ночь";
+    case "dawn":
+      return "рассвет";
+    case "morning":
+      return "утро";
+    case "day":
+      return "день";
+    case "afternoon":
+      return "после полудня";
+    case "dusk":
+      return "сумерки";
+    case "evening":
+      return "вечер";
+    case "night":
+      return "ночь";
+  }
+}
+
+function mergeActor(current: Actor, patch: Parameters<typeof normalizeActor>[0]): Actor {
+  const next = normalizeActor(patch, current.world_id);
+  return {
+    ...next,
+    inventory_id: next.inventory_id || current.inventory_id,
+  };
+}
+
+function advanceWorldTime(current: WorldTime, realSeconds: number): WorldTime {
+  const rate = current.world_seconds_per_real_second || 1;
+  const dayLength = current.day_length_seconds || 480;
+  const nextWorldTime = current.world_time + realSeconds * rate;
+  const dayOffset = ((nextWorldTime % dayLength) + dayLength) % dayLength;
+  const phaseIndex = Math.min(
+    DAY_PHASES.length - 1,
+    Math.floor((dayOffset * DAY_PHASES.length) / dayLength),
+  );
+  const phaseStart = (phaseIndex * dayLength) / DAY_PHASES.length;
+  const phaseEnd = ((phaseIndex + 1) * dayLength) / DAY_PHASES.length;
+  const phaseLength = Math.max(phaseEnd - phaseStart, 1);
+
+  return {
+    ...current,
+    world_time: nextWorldTime,
+    day: Math.floor(nextWorldTime / dayLength) + 1,
+    phase: DAY_PHASES[phaseIndex],
+    phase_progress: (dayOffset - phaseStart) / phaseLength,
+    day_progress: dayOffset / dayLength,
+  };
+}
+
+function normalizeWorldTime(value: WorldTime): WorldTime {
+  return {
+    ...DEFAULT_WORLD_TIME,
+    ...value,
+    day_length_seconds:
+      value.day_length_seconds || DEFAULT_WORLD_TIME.day_length_seconds,
+    world_seconds_per_real_second:
+      value.world_seconds_per_real_second ||
+      DEFAULT_WORLD_TIME.world_seconds_per_real_second,
+  };
 }

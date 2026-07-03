@@ -219,6 +219,7 @@ func copyPlayerState(state PlayerState) PlayerState {
 		Actors:      make(map[actor.ID]*actor.Actor, len(state.Actors)),
 		Inventories: make(map[inventory.ID]*inventory.Inventory, len(state.Inventories)),
 		Stacks:      append([]inventory.Stack(nil), state.Stacks...),
+		WorldTime:   state.WorldTime,
 	}
 	for id, act := range state.Actors {
 		if act == nil {

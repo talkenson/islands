@@ -2,8 +2,10 @@ package game
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -115,6 +117,62 @@ func TestMovePublishesSnapshotsForNewVisibleChunks(t *testing.T) {
 	}
 }
 
+func TestMoveEntityPatchIsCompact(t *testing.T) {
+	hub := realtime.NewHub()
+	service := NewService(hub, realtime.Config{VisibleChunkRadius: 1})
+	act := service.SeedDemoWorld(1)
+	coord, _ := world.ToChunkCoord(act.X, act.Y)
+	client := hub.Subscribe(1, 1, map[world.ChunkCoord]struct{}{coord: {}})
+	defer hub.Unsubscribe(client.ID)
+
+	if _, err := service.ApplyAction(context.Background(), 1, 1, ActionRequest{ActionType: "move", X: act.X + 1, Y: act.Y}); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case event := <-client.Events:
+		if event.Type != "entity_patch" {
+			t.Fatalf("event type: got %q, want entity_patch", event.Type)
+		}
+		data, err := json.Marshal(event.Data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw := string(data)
+		if strings.Contains(raw, "client_action_id") || strings.Contains(raw, "action_type") || strings.Contains(raw, "event_id") {
+			t.Fatalf("entity patch leaked action ack fields: %s", raw)
+		}
+		if !strings.Contains(raw, `"actor"`) {
+			t.Fatalf("entity patch missing actor: %s", raw)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("client did not receive entity_patch")
+	}
+}
+
+func TestChunkSnapshotEncodesUint16LayersAsBase64(t *testing.T) {
+	ch := world.NewChunk(0, 0)
+	ch.Base[0] = 9895
+	ch.Cover[0] = 513
+	ch.Stock[0] = 11
+	snapshot := snapshotChunk(ch, 1)
+
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"base", "cover", "stock"} {
+		if _, ok := raw[key].(string); !ok {
+			t.Fatalf("%s layer should be base64 string: %s", key, data)
+		}
+	}
+}
+
 func TestMoveRejectsTeleport(t *testing.T) {
 	service := NewService(realtime.NewHub(), realtime.Config{VisibleChunkRadius: 1})
 	act := service.SeedDemoWorld(1)
@@ -127,6 +185,158 @@ func TestMoveRejectsTeleport(t *testing.T) {
 
 	if err != ErrInvalidAction {
 		t.Fatalf("move error: got %v, want %v", err, ErrInvalidAction)
+	}
+}
+
+func TestActionsDoNotAdvanceWorldTime(t *testing.T) {
+	service := NewService(realtime.NewHub(), realtime.Config{VisibleChunkRadius: 1})
+	service.SeedDemoWorld(1)
+	before := service.WorldTime()
+
+	if _, err := service.ApplyAction(context.Background(), 1, 1, ActionRequest{ActionType: "move", X: DemoActorStartX + 1, Y: DemoActorStartY}); err != nil {
+		t.Fatal(err)
+	}
+	after := service.WorldTime()
+
+	if before.WorldTime != after.WorldTime {
+		t.Fatalf("world time after action: got %d, want %d", after.WorldTime, before.WorldTime)
+	}
+}
+
+func TestMoveActionResultIsCompact(t *testing.T) {
+	service := NewService(realtime.NewHub(), realtime.Config{VisibleChunkRadius: 1})
+	service.SeedDemoWorld(1)
+
+	result, err := service.ApplyAction(context.Background(), 1, 1, ActionRequest{ActionType: "move", X: DemoActorStartX + 1, Y: DemoActorStartY})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `"inventory"`) {
+		t.Fatalf("move result should omit inventory: %s", data)
+	}
+	if strings.Contains(string(data), `"actor"`) {
+		t.Fatalf("move result should omit actor: %s", data)
+	}
+	if strings.Contains(string(data), `"world_time"`) {
+		t.Fatalf("move result should omit world_time: %s", data)
+	}
+}
+
+func TestHarvestActionResultIsCompact(t *testing.T) {
+	service := NewService(realtime.NewHub(), realtime.Config{VisibleChunkRadius: 1})
+	service.SeedDemoWorld(1)
+
+	result, err := service.ApplyAction(context.Background(), 1, 1, ActionRequest{ActionType: "harvest"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `"inventory"`) {
+		t.Fatalf("harvest result should omit inventory: %s", data)
+	}
+	if strings.Contains(string(data), `"actor"`) {
+		t.Fatalf("harvest result should omit actor: %s", data)
+	}
+	if strings.Contains(string(data), `"world_time"`) {
+		t.Fatalf("harvest result should omit world_time: %s", data)
+	}
+}
+
+func TestHarvestPublishesInventoryPatchToActor(t *testing.T) {
+	hub := realtime.NewHub()
+	service := NewService(hub, realtime.Config{VisibleChunkRadius: 1})
+	act := service.SeedDemoWorld(1)
+	coord, _ := world.ToChunkCoord(act.X, act.Y)
+	owner := hub.Subscribe(1, 1, map[world.ChunkCoord]struct{}{coord: {}})
+	defer hub.Unsubscribe(owner.ID)
+	other := hub.Subscribe(2, 1, map[world.ChunkCoord]struct{}{coord: {}})
+	defer hub.Unsubscribe(other.ID)
+
+	if _, err := service.ApplyAction(context.Background(), 1, 1, ActionRequest{ActionType: "harvest"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var patch InventoryPatch
+	found := false
+	for i := 0; i < 3; i++ {
+		select {
+		case event := <-owner.Events:
+			if event.Type != "inventory_patch" {
+				continue
+			}
+			data, err := json.Marshal(event.Data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(data, &patch); err != nil {
+				t.Fatal(err)
+			}
+			found = true
+		case <-time.After(time.Second):
+			t.Fatalf("owner did not receive inventory_patch")
+		}
+		if found {
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("owner did not receive inventory_patch")
+	}
+	if len(patch.Inventory) != 1 || patch.Inventory[0].ItemID != ItemWood || patch.Inventory[0].Amount != 1 {
+		t.Fatalf("inventory patch: got %+v", patch.Inventory)
+	}
+
+	for i := 0; i < 2; i++ {
+		select {
+		case event := <-other.Events:
+			if event.Type == "inventory_patch" {
+				t.Fatalf("other actor received inventory patch: %+v", event)
+			}
+		case <-time.After(20 * time.Millisecond):
+			return
+		}
+	}
+}
+
+func TestAdvanceWorldTimePublishesOnPhaseChange(t *testing.T) {
+	hub := realtime.NewHub()
+	service := NewService(hub, realtime.Config{VisibleChunkRadius: 1})
+	service.SetClockConfig(ClockConfig{DayLengthSeconds: 480, SecondsPerTick: 1})
+	act := service.SeedDemoWorld(1)
+	coord, _ := world.ToChunkCoord(act.X, act.Y)
+	client := hub.Subscribe(1, 1, map[world.ChunkCoord]struct{}{coord: {}})
+	defer hub.Unsubscribe(client.ID)
+
+	if _, changed := service.AdvanceWorldTime(1, 59); changed {
+		t.Fatalf("phase changed too early")
+	}
+	select {
+	case event := <-client.Events:
+		t.Fatalf("unexpected event before phase change: %+v", event)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	next, changed := service.AdvanceWorldTime(1, 1)
+	if !changed {
+		t.Fatalf("phase did not change")
+	}
+	if next.Phase != PhaseDawn {
+		t.Fatalf("phase: got %s, want %s", next.Phase, PhaseDawn)
+	}
+	select {
+	case event := <-client.Events:
+		if event.Type != "world_time" {
+			t.Fatalf("event type: got %q, want world_time", event.Type)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("world_time event was not published")
 	}
 }
 

@@ -13,6 +13,7 @@ export interface Actor {
   world_id: number;
   x: number;
   y: number;
+  inventory_id: number;
 }
 
 export interface InventoryItem {
@@ -42,6 +43,10 @@ export interface ActorWire {
   x?: number;
   Y?: number;
   y?: number;
+  PocketInventoryID?: number;
+  pocket_inventory_id?: number;
+  InventoryID?: number;
+  inventory_id?: number;
 }
 
 export interface LoginResponse {
@@ -55,10 +60,10 @@ export interface LoginResponse {
 export interface ChunkSnapshotWire {
   cx: number;
   cy: number;
-  base?: number[];
+  base?: number[] | string;
   water?: number[] | string;
-  cover?: number[];
-  stock?: number[];
+  cover?: number[] | string;
+  stock?: number[] | string;
   meta?: number[] | string;
   temperature?: number[] | string;
   updated_tick?: number;
@@ -67,10 +72,10 @@ export interface ChunkSnapshotWire {
 export interface ChunkSnapshot {
   cx: number;
   cy: number;
-  base: number[];
+  base: Uint16Array;
   water: Uint8Array;
-  cover: number[];
-  stock: number[];
+  cover: Uint16Array;
+  stock: Uint16Array;
   meta: Uint8Array;
   temperature: Uint8Array;
   updatedTick: number;
@@ -80,8 +85,6 @@ export interface ActionResult {
   accepted?: boolean;
   client_action_id?: string;
   action_type?: ActionType;
-  actor?: ActorWire;
-  inventory?: InventoryItemWire[];
   event_id?: number;
   code?: string;
   message?: string;
@@ -99,10 +102,17 @@ export interface HelloPayload {
   actor?: ActorWire;
   inventory?: InventoryItemWire[];
   render_config?: RenderConfig;
+  world_time?: WorldTime;
 }
 
-export interface EntityPatchPayload extends ActionResult {
+export interface EntityPatchPayload {
   actor?: ActorWire;
+}
+
+export interface InventoryPatchPayload {
+  actor_id: number;
+  inventory_id: number;
+  inventory?: InventoryItemWire[];
 }
 
 export interface ChunkPosition {
@@ -114,6 +124,26 @@ export interface ChunkPosition {
 export interface WorldCell {
   x: number;
   y: number;
+}
+
+export type DayPhase =
+  | "late_night"
+  | "dawn"
+  | "morning"
+  | "day"
+  | "afternoon"
+  | "dusk"
+  | "evening"
+  | "night";
+
+export interface WorldTime {
+  world_time: number;
+  day: number;
+  phase: DayPhase;
+  phase_progress: number;
+  day_progress: number;
+  day_length_seconds: number;
+  world_seconds_per_real_second: number;
 }
 
 export interface RenderConfig {

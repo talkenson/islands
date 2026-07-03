@@ -21,6 +21,7 @@ type PlayerState struct {
 	Actors      map[actor.ID]*actor.Actor
 	Inventories map[inventory.ID]*inventory.Inventory
 	Stacks      []inventory.Stack
+	WorldTime   uint64
 }
 
 type Store interface {

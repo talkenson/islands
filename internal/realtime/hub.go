@@ -10,6 +10,7 @@ type Event struct {
 	ID            uint64             `json:"id"`
 	Type          string             `json:"type"`
 	WorldID       uint64             `json:"world_id"`
+	TargetActorID uint64             `json:"target_actor_id,omitempty"`
 	ChangedChunks []world.ChunkCoord `json:"changed_chunks,omitempty"`
 	Data          any                `json:"data,omitempty"`
 }
@@ -100,7 +101,7 @@ func (h *Hub) Publish(event Event) {
 	}
 
 	for _, client := range h.clients {
-		if client.WorldID != event.WorldID || !Intersects(client.Interest, event.ChangedChunks) {
+		if client.WorldID != event.WorldID || !eventMatchesClient(event, client) {
 			continue
 		}
 		select {
@@ -130,11 +131,18 @@ func (h *Hub) Replay(client *Client, afterID uint64) []Event {
 	defer h.mu.RUnlock()
 	events := make([]Event, 0)
 	for _, event := range h.history {
-		if event.ID > afterID && event.WorldID == client.WorldID && Intersects(client.Interest, event.ChangedChunks) {
+		if event.ID > afterID && event.WorldID == client.WorldID && eventMatchesClient(event, client) {
 			events = append(events, event)
 		}
 	}
 	return events
+}
+
+func eventMatchesClient(event Event, client *Client) bool {
+	if event.TargetActorID != 0 && event.TargetActorID != client.ActorID {
+		return false
+	}
+	return Intersects(client.Interest, event.ChangedChunks)
 }
 
 func copyInterest(src map[world.ChunkCoord]struct{}) map[world.ChunkCoord]struct{} {

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"islands/internal/actor"
 	"islands/internal/auth"
 	"islands/internal/game"
 	"islands/internal/mapgen"
@@ -60,10 +61,11 @@ type loginResponse struct {
 }
 
 type actorRef struct {
-	ID      uint64 `json:"id"`
-	WorldID uint64 `json:"world_id"`
-	X       int32  `json:"x"`
-	Y       int32  `json:"y"`
+	ID          uint64 `json:"id"`
+	WorldID     uint64 `json:"world_id"`
+	X           int32  `json:"x"`
+	Y           int32  `json:"y"`
+	InventoryID uint64 `json:"inventory_id"`
 }
 
 type worldRef struct {
@@ -106,7 +108,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, loginResponse{
 		Token:     token,
 		UserID:    req.UserID,
-		Actors:    []actorRef{{ID: req.ActorID, WorldID: req.WorldID, X: act.X, Y: act.Y}},
+		Actors:    []actorRef{actorRefFromActor(act)},
 		Inventory: inventory,
 		Worlds:    []worldRef{{ID: req.WorldID}},
 	})
@@ -157,9 +159,10 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	_ = writeSSE(w, realtime.Event{Type: "hello", WorldID: worldID, Data: map[string]any{
 		"actor_id":      claims.ActorID,
 		"world_id":      worldID,
-		"actor":         act,
+		"actor":         actorRefFromActor(act),
 		"inventory":     inventory,
 		"render_config": mapgen.DefaultRenderConfig(s.game.WorldRenderSeed(worldID)),
+		"world_time":    s.game.WorldTime(),
 	}})
 	for _, snapshot := range s.game.ChunkSnapshots(r.Context(), worldID, interest) {
 		_ = writeSSE(w, realtime.Event{
@@ -219,6 +222,16 @@ func (s *Server) actions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func actorRefFromActor(act actor.Actor) actorRef {
+	return actorRef{
+		ID:          uint64(act.ID),
+		WorldID:     act.WorldID,
+		X:           act.X,
+		Y:           act.Y,
+		InventoryID: act.PocketInventoryID,
+	}
+}
+
 func pathWorldID(r *http.Request) (uint64, error) {
 	raw := r.PathValue("worldID")
 	id, err := strconv.ParseUint(raw, 10, 64)
@@ -269,7 +282,7 @@ func writeSSE(w http.ResponseWriter, event realtime.Event) error {
 			return err
 		}
 	}
-	payload, err := json.Marshal(event)
+	payload, err := json.Marshal(event.Data)
 	if err != nil {
 		return err
 	}

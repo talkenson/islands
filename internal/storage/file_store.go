@@ -133,6 +133,7 @@ func (s *FileStore) SavePlayerState(ctx context.Context, state PlayerState, tick
 	payload := filePlayerState{
 		Version:     1,
 		Tick:        tick,
+		WorldTime:   state.WorldTime,
 		Actors:      make([]actor.Actor, 0, len(state.Actors)),
 		Inventories: make([]inventory.Inventory, 0, len(state.Inventories)),
 		Stacks:      append([]inventory.Stack(nil), state.Stacks...),
@@ -265,6 +266,7 @@ func (s *FileStore) applyJournalLocked(chunks map[world.ChunkCoord]*world.Chunk)
 type filePlayerState struct {
 	Version     uint16                `json:"version"`
 	Tick        uint64                `json:"tick"`
+	WorldTime   uint64                `json:"world_time,omitempty"`
 	Actors      []actor.Actor         `json:"actors"`
 	Inventories []inventory.Inventory `json:"inventories"`
 	Stacks      []inventory.Stack     `json:"stacks"`
@@ -301,6 +303,7 @@ func (s *FileStore) loadPlayerStateLocked() (PlayerState, uint64, error) {
 		state.Inventories[inv.ID] = &copied
 	}
 	state.Stacks = append([]inventory.Stack(nil), payload.Stacks...)
+	state.WorldTime = payload.WorldTime
 	return state, payload.Tick, nil
 }
 

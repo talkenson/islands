@@ -16,6 +16,7 @@ import type {
   RenderConfig,
   Viewport,
   WorldCell,
+  WorldTime,
 } from "./types";
 
 const WATER_NONE = 0;
@@ -43,6 +44,14 @@ const FOG_LOADED_CHUNK_MULTIPLIER = 0.8;
 const FOG_LOADED_EDGE_FEATHER_TILES = 8;
 type ChunkLookup = Map<number, Set<number>>;
 
+interface PhaseLighting {
+  color: number;
+  alpha: number;
+  fogClearMultiplier: number;
+  fogFullMultiplier: number;
+  fogAlphaMultiplier: number;
+}
+
 interface ChunkView {
   sprite: Sprite;
   texture: Texture;
@@ -53,6 +62,7 @@ interface ChunkView {
 interface PendingFrame {
   actor: Actor;
   chunks: Map<string, ChunkSnapshot>;
+  worldTime: WorldTime;
 }
 
 export class MapRenderer {
@@ -63,6 +73,7 @@ export class MapRenderer {
   private readonly worldLayer = new Container();
   private readonly chunkLayer = new Container();
   private readonly gridLayer = new Graphics({ roundPixels: true });
+  private readonly lightingLayer = new Graphics({ roundPixels: true });
   private readonly actorLayer = new Graphics({ roundPixels: true });
   private readonly chunkViews = new Map<string, ChunkView>();
   private app: Application | undefined;
@@ -102,15 +113,19 @@ export class MapRenderer {
     }
   }
 
-  resize(actor: Actor, chunks: Map<string, ChunkSnapshot>): void {
+  resize(
+    actor: Actor,
+    chunks: Map<string, ChunkSnapshot>,
+    worldTime: WorldTime,
+  ): void {
     const width = Math.max(1, Math.floor(window.innerWidth));
     const height = Math.max(1, Math.floor(window.innerHeight));
     if (!this.initialized || !this.app) {
-      this.pendingFrame = { actor, chunks };
+      this.pendingFrame = { actor, chunks, worldTime };
       return;
     }
     this.app.renderer.resize(width, height);
-    this.draw(actor, chunks);
+    this.draw(actor, chunks, worldTime);
   }
 
   zoom(
@@ -119,6 +134,7 @@ export class MapRenderer {
     maxZoom: number,
     actor: Actor,
     chunks: Map<string, ChunkSnapshot>,
+    worldTime: WorldTime,
   ): void {
     const direction = deltaY > 0 ? -1 : 1;
     const factor = direction > 0 ? 1.16 : 1 / 1.16;
@@ -127,7 +143,7 @@ export class MapRenderer {
       return;
     }
     this.viewport.zoom = nextZoom;
-    this.draw(actor, chunks);
+    this.draw(actor, chunks, worldTime);
   }
 
   cellAtClientPoint(clientX: number, clientY: number): WorldCell | undefined {
@@ -149,9 +165,13 @@ export class MapRenderer {
     };
   }
 
-  draw(actor: Actor, chunks: Map<string, ChunkSnapshot>): void {
+  draw(
+    actor: Actor,
+    chunks: Map<string, ChunkSnapshot>,
+    worldTime: WorldTime,
+  ): void {
     if (!this.initialized || !this.app) {
-      this.pendingFrame = { actor, chunks };
+      this.pendingFrame = { actor, chunks, worldTime };
       return;
     }
 
@@ -172,7 +192,18 @@ export class MapRenderer {
     this.worldLayer.scale.set(tile);
 
     this.drawGrid(tile, centerX, centerY, width, height);
-    this.drawFogOverlay(actor, chunks, tile, centerX, centerY, width, height);
+    const lighting = lightingForPhase(worldTime.phase);
+    this.drawFogOverlay(
+      actor,
+      chunks,
+      tile,
+      centerX,
+      centerY,
+      width,
+      height,
+      lighting,
+    );
+    this.drawLighting(lighting, width, height);
     this.drawActor(actor, tile, centerX, centerY);
     this.app.render();
   }
@@ -217,13 +248,14 @@ export class MapRenderer {
     this.worldLayer.addChild(this.chunkLayer);
     app.stage.addChild(this.gridLayer);
     app.stage.addChild(this.fogSprite);
+    app.stage.addChild(this.lightingLayer);
     app.stage.addChild(this.actorLayer);
     this.initialized = true;
 
     if (this.pendingFrame) {
       const frame = this.pendingFrame;
       this.pendingFrame = undefined;
-      this.draw(frame.actor, frame.chunks);
+      this.draw(frame.actor, frame.chunks, frame.worldTime);
     } else {
       app.render();
     }
@@ -336,6 +368,7 @@ export class MapRenderer {
     oy: number,
     screenWidth: number,
     screenHeight: number,
+    lighting: PhaseLighting,
   ): void {
     const scale = Math.min(
       FOG_MASK_BASE_SCALE,
@@ -370,7 +403,7 @@ export class MapRenderer {
         const wx = (screenX - ox) / tile;
         const wy = (screenY - oy) / tile;
         const alpha =
-          this.fogAlpha(wx - actorX, wy - actorY) *
+          this.fogAlpha(wx - actorX, wy - actorY, lighting) *
           this.loadedChunkFogMultiplier(chunkLookup, wx, wy);
         const offset = (y * width + x) * 4;
         data[offset] = FOG_RGB[0];
@@ -424,12 +457,32 @@ export class MapRenderer {
     return lerp(1, FOG_LOADED_CHUNK_MULTIPLIER, t);
   }
 
-  private fogAlpha(dx: number, dy: number): number {
+  private fogAlpha(dx: number, dy: number, lighting: PhaseLighting): number {
     const distance = roundedSquareDistance(dx, dy);
+    const clearTiles = FOG_CLEAR_TILES * lighting.fogClearMultiplier;
+    const fullTiles = FOG_FULL_TILES * lighting.fogFullMultiplier;
     const t = smoothstep(
-      (distance - FOG_CLEAR_TILES) / (FOG_FULL_TILES - FOG_CLEAR_TILES),
+      (distance - clearTiles) / (fullTiles - clearTiles),
     );
-    return clamp(t * FOG_MAX_ALPHA, 0, FOG_MAX_ALPHA);
+    return clamp(
+      t * FOG_MAX_ALPHA * lighting.fogAlphaMultiplier,
+      0,
+      FOG_MAX_ALPHA,
+    );
+  }
+
+  private drawLighting(
+    lighting: PhaseLighting,
+    screenWidth: number,
+    screenHeight: number,
+  ): void {
+    this.lightingLayer.clear();
+    if (lighting.alpha <= 0) {
+      return;
+    }
+    this.lightingLayer
+      .rect(0, 0, screenWidth, screenHeight)
+      .fill({ color: lighting.color, alpha: lighting.alpha });
   }
 
   private cellColor(
@@ -680,6 +733,75 @@ function buildChunkLookup(chunks: Map<string, ChunkSnapshot>): ChunkLookup {
 
 function hasChunk(chunks: ChunkLookup, cx: number, cy: number): boolean {
   return chunks.get(cx)?.has(cy) || false;
+}
+
+function lightingForPhase(phase: WorldTime["phase"]): PhaseLighting {
+  switch (phase) {
+    case "late_night":
+      return {
+        color: 0x06111f,
+        alpha: 0.48,
+        fogClearMultiplier: 0.68,
+        fogFullMultiplier: 0.78,
+        fogAlphaMultiplier: 1.2,
+      };
+    case "dawn":
+      return {
+        color: 0xf0a66a,
+        alpha: 0.16,
+        fogClearMultiplier: 0.86,
+        fogFullMultiplier: 0.9,
+        fogAlphaMultiplier: 1.08,
+      };
+    case "morning":
+      return {
+        color: 0xffd7a3,
+        alpha: 0.06,
+        fogClearMultiplier: 0.96,
+        fogFullMultiplier: 0.98,
+        fogAlphaMultiplier: 1,
+      };
+    case "day":
+      return {
+        color: 0xffffff,
+        alpha: 0,
+        fogClearMultiplier: 1,
+        fogFullMultiplier: 1,
+        fogAlphaMultiplier: 1,
+      };
+    case "afternoon":
+      return {
+        color: 0xffc66d,
+        alpha: 0.08,
+        fogClearMultiplier: 0.98,
+        fogFullMultiplier: 1,
+        fogAlphaMultiplier: 1,
+      };
+    case "dusk":
+      return {
+        color: 0xd16a57,
+        alpha: 0.2,
+        fogClearMultiplier: 0.82,
+        fogFullMultiplier: 0.88,
+        fogAlphaMultiplier: 1.1,
+      };
+    case "evening":
+      return {
+        color: 0x172342,
+        alpha: 0.34,
+        fogClearMultiplier: 0.74,
+        fogFullMultiplier: 0.82,
+        fogAlphaMultiplier: 1.14,
+      };
+    case "night":
+      return {
+        color: 0x071529,
+        alpha: 0.44,
+        fogClearMultiplier: 0.68,
+        fogFullMultiplier: 0.78,
+        fogAlphaMultiplier: 1.18,
+      };
+  }
 }
 
 function smoothstep(value: number): number {

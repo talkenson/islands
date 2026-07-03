@@ -35,6 +35,8 @@ type Service struct {
 	loadedWorlds map[uint64]bool
 	renderSeeds  map[uint64]string
 	tick         uint64
+	worldTime    uint64
+	clockConfig  ClockConfig
 	nextID       uint64
 	hub          *realtime.Hub
 	config       realtime.Config
@@ -54,6 +56,7 @@ func NewService(hub *realtime.Hub, config realtime.Config) *Service {
 		renderSeeds:  make(map[uint64]string),
 		hub:          hub,
 		config:       config.Normalize(),
+		clockConfig:  ClockConfig{}.Normalize(),
 	}
 }
 
@@ -91,7 +94,47 @@ func (s *Service) LoadWorld(worldID uint64, state storage.WorldState) error {
 	if state.Tick > s.tick {
 		s.tick = state.Tick
 	}
+	s.worldTime = state.Players.WorldTime
 	return nil
+}
+
+func (s *Service) SetClockConfig(config ClockConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.clockConfig = config.Normalize()
+}
+
+func (s *Service) WorldTime() WorldTime {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.worldTimeLocked()
+}
+
+func (s *Service) AdvanceWorldTime(worldID uint64, seconds uint64) (WorldTime, bool) {
+	if seconds == 0 {
+		return s.WorldTime(), false
+	}
+
+	s.mu.Lock()
+	previous := s.worldTimeLocked()
+	s.worldTime += seconds
+	next := s.worldTimeLocked()
+	changed := previous.Phase != next.Phase
+	var eventID uint64
+	if changed {
+		eventID = s.nextEventIDLocked()
+	}
+	s.mu.Unlock()
+
+	if changed {
+		s.hub.Publish(realtime.Event{
+			ID:      eventID,
+			Type:    "world_time",
+			WorldID: worldID,
+			Data:    next,
+		})
+	}
+	return next, changed
 }
 
 func (s *Service) LoadChunks(worldID uint64, chunks map[world.ChunkCoord]*world.Chunk) error {
@@ -192,15 +235,15 @@ func (s *Service) VisibleChunksForActor(ctx context.Context, worldID, actorID ui
 }
 
 type ChunkSnapshot struct {
-	CX          int32    `json:"cx"`
-	CY          int32    `json:"cy"`
-	Base        []uint16 `json:"base"`
-	Water       []uint8  `json:"water"`
-	Cover       []uint16 `json:"cover"`
-	Stock       []uint16 `json:"stock"`
-	Meta        []uint8  `json:"meta"`
-	Temperature []uint8  `json:"temperature"`
-	UpdatedTick uint64   `json:"updated_tick"`
+	CX          int32       `json:"cx"`
+	CY          int32       `json:"cy"`
+	Base        Uint16Layer `json:"base"`
+	Water       []uint8     `json:"water"`
+	Cover       Uint16Layer `json:"cover"`
+	Stock       Uint16Layer `json:"stock"`
+	Meta        []uint8     `json:"meta"`
+	Temperature []uint8     `json:"temperature"`
+	UpdatedTick uint64      `json:"updated_tick"`
 }
 
 func (s *Service) ChunkSnapshots(ctx context.Context, worldID uint64, coords map[world.ChunkCoord]struct{}) []ChunkSnapshot {
@@ -231,13 +274,27 @@ type ActionRequest struct {
 	Y              int32  `json:"y,omitempty"`
 }
 
+type ActorSnapshot struct {
+	ID actor.ID `json:"id"`
+	X  int32    `json:"x"`
+	Y  int32    `json:"y"`
+}
+
 type ActionResult struct {
-	Accepted       bool            `json:"accepted"`
-	ClientActionID string          `json:"client_action_id,omitempty"`
-	ActionType     string          `json:"action_type,omitempty"`
-	Actor          actor.Actor     `json:"actor"`
-	Inventory      []InventoryItem `json:"inventory"`
-	EventID        uint64          `json:"event_id"`
+	Accepted       bool   `json:"accepted"`
+	ClientActionID string `json:"client_action_id,omitempty"`
+	ActionType     string `json:"action_type,omitempty"`
+	EventID        uint64 `json:"event_id"`
+}
+
+type EntityPatch struct {
+	Actor ActorSnapshot `json:"actor"`
+}
+
+type InventoryPatch struct {
+	ActorID     uint64          `json:"actor_id"`
+	InventoryID uint64          `json:"inventory_id"`
+	Inventory   []InventoryItem `json:"inventory"`
 }
 
 func (s *Service) ApplyAction(ctx context.Context, worldID, actorID uint64, req ActionRequest) (ActionResult, error) {
@@ -283,10 +340,11 @@ func (s *Service) ApplyAction(ctx context.Context, worldID, actorID uint64, req 
 		newChunks := interestDifference(interest, oldInterest)
 		changed := interestList(interest)
 		snapshots := s.chunkSnapshotsLocked(worldID, newChunks)
-		result := ActionResult{Accepted: true, ClientActionID: req.ClientActionID, ActionType: req.ActionType, Actor: *act, Inventory: s.inventorySnapshotLocked(*act), EventID: eventID}
+		result := ActionResult{Accepted: true, ClientActionID: req.ClientActionID, ActionType: req.ActionType, EventID: eventID}
+		patch := EntityPatch{Actor: actorSnapshot(*act)}
 		s.mu.Unlock()
 		s.hub.SetActorInterest(worldID, actorID, interest)
-		s.hub.Publish(realtime.Event{ID: eventID, Type: "entity_patch", WorldID: worldID, ChangedChunks: changed, Data: result})
+		s.hub.Publish(realtime.Event{ID: eventID, Type: "entity_patch", WorldID: worldID, ChangedChunks: changed, Data: patch})
 		for _, snapshot := range snapshots {
 			snapshotID := s.nextEventID()
 			s.hub.Publish(realtime.Event{
@@ -340,15 +398,18 @@ func (s *Service) ApplyAction(ctx context.Context, worldID, actorID uint64, req 
 			}
 		}
 		eventID := s.nextEventIDLocked()
+		inventoryPatchID := s.nextEventIDLocked()
 		snapshot := snapshotChunk(ch, s.tick)
-		result := ActionResult{Accepted: true, ClientActionID: req.ClientActionID, ActionType: req.ActionType, Actor: *act, Inventory: s.inventorySnapshotLocked(*act), EventID: eventID}
+		inventoryPatch := s.inventoryPatchLocked(*act)
+		result := ActionResult{Accepted: true, ClientActionID: req.ClientActionID, ActionType: req.ActionType, EventID: eventID}
+		patch := EntityPatch{Actor: actorSnapshot(*act)}
 		s.mu.Unlock()
 		s.hub.Publish(realtime.Event{
 			ID:            eventID,
 			Type:          "entity_patch",
 			WorldID:       worldID,
 			ChangedChunks: []world.ChunkCoord{coord},
-			Data:          result,
+			Data:          patch,
 		})
 		snapshotID := s.nextEventID()
 		s.hub.Publish(realtime.Event{
@@ -357,6 +418,13 @@ func (s *Service) ApplyAction(ctx context.Context, worldID, actorID uint64, req 
 			WorldID:       worldID,
 			ChangedChunks: []world.ChunkCoord{coord},
 			Data:          snapshot,
+		})
+		s.hub.Publish(realtime.Event{
+			ID:            inventoryPatchID,
+			Type:          "inventory_patch",
+			WorldID:       worldID,
+			TargetActorID: actorID,
+			Data:          inventoryPatch,
 		})
 		return result, nil
 	default:
@@ -375,6 +443,14 @@ func validMove(act actor.Actor, x, y int32) bool {
 		dy = -dy
 	}
 	return dx+dy == 1
+}
+
+func actorSnapshot(act actor.Actor) ActorSnapshot {
+	return ActorSnapshot{
+		ID: act.ID,
+		X:  act.X,
+		Y:  act.Y,
+	}
 }
 
 func (s *Service) ensureChunkLocked(worldID uint64, coord world.ChunkCoord) *world.Chunk {
@@ -476,6 +552,7 @@ func (s *Service) playerStateLocked() storage.PlayerState {
 	state := storage.PlayerState{
 		Actors:      make(map[actor.ID]*actor.Actor, len(s.actors)),
 		Inventories: make(map[inventory.ID]*inventory.Inventory, len(s.inventories)),
+		WorldTime:   s.worldTime,
 	}
 	for id, act := range s.actors {
 		if act == nil {
@@ -499,6 +576,10 @@ func (s *Service) playerStateLocked() storage.PlayerState {
 		}
 	}
 	return state
+}
+
+func (s *Service) worldTimeLocked() WorldTime {
+	return BuildWorldTime(s.worldTime, s.clockConfig)
 }
 
 func (s *Service) ensurePocketInventoryLocked(act actor.Actor) {
@@ -583,6 +664,14 @@ func (s *Service) inventorySnapshotLocked(act actor.Actor) []InventoryItem {
 	return out
 }
 
+func (s *Service) inventoryPatchLocked(act actor.Actor) InventoryPatch {
+	return InventoryPatch{
+		ActorID:     uint64(act.ID),
+		InventoryID: act.PocketInventoryID,
+		Inventory:   s.inventorySnapshotLocked(act),
+	}
+}
+
 func itemName(itemID inventory.ItemID) string {
 	switch itemID {
 	case ItemWood:
@@ -607,10 +696,10 @@ func snapshotChunk(ch *world.Chunk, tick uint64) ChunkSnapshot {
 	return ChunkSnapshot{
 		CX:          ch.X,
 		CY:          ch.Y,
-		Base:        append([]uint16(nil), ch.Base...),
+		Base:        Uint16Layer(append([]uint16(nil), ch.Base...)),
 		Water:       append([]uint8(nil), ch.Water...),
-		Cover:       append([]uint16(nil), ch.Cover...),
-		Stock:       append([]uint16(nil), ch.Stock...),
+		Cover:       Uint16Layer(append([]uint16(nil), ch.Cover...)),
+		Stock:       Uint16Layer(append([]uint16(nil), ch.Stock...)),
 		Meta:        append([]uint8(nil), ch.Meta...),
 		Temperature: append([]uint8(nil), ch.Temperature...),
 		UpdatedTick: tick,

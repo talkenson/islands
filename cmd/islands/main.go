@@ -29,11 +29,19 @@ func main() {
 	compactWorldInterval := flag.Duration("compact-world-interval", 0, "compact journal into world map while serving; 0 disables periodic compaction")
 	storageBatchInterval := flag.Duration("storage-batch-interval", time.Second, "batch dirty world writes for this duration; 0 writes synchronously")
 	storageBatchMaxChunks := flag.Int("storage-batch-max-chunks", 128, "flush batched storage early after this many dirty chunks")
+	worldDayLength := flag.Duration("world-day-length", 8*time.Minute, "in-game day length in world time")
+	worldTimeTickInterval := flag.Duration("world-time-tick-interval", time.Second, "real interval between world time ticks; 0 disables world time")
+	worldSecondsPerTick := flag.Uint64("world-seconds-per-tick", game.DefaultWorldSecondsPerTick, "world seconds added on each world time tick")
 	flag.Parse()
 
 	hub := realtime.NewHub()
 	cfg := realtime.Config{VisibleChunkRadius: int32(*visibleRadius)}.Normalize()
 	gameService := game.NewService(hub, cfg)
+	gameService.SetClockConfig(game.ClockConfig{
+		DayLengthSeconds:          uint64(max(worldDayLength.Round(time.Second)/time.Second, 1)),
+		SecondsPerTick:            *worldSecondsPerTick,
+		WorldSecondsPerRealSecond: worldTimeRate(*worldTimeTickInterval, *worldSecondsPerTick),
+	})
 	if *worldMap != "" {
 		ctx := context.Background()
 		if *worldJournal == "" {
@@ -84,6 +92,10 @@ func main() {
 
 	stopCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	if *worldTimeTickInterval > 0 && *worldSecondsPerTick > 0 {
+		go runWorldClock(stopCtx, gameService, 1, *worldTimeTickInterval, *worldSecondsPerTick)
+		fmt.Printf("world clock enabled: day=%s, interval=%s, seconds per tick=%d\n", *worldDayLength, *worldTimeTickInterval, *worldSecondsPerTick)
+	}
 	if *worldMap != "" && *compactWorldInterval > 0 {
 		go runWorldCompactor(stopCtx, gameService, *compactWorldInterval)
 		fmt.Printf("periodic world compaction enabled: interval=%s\n", *compactWorldInterval)
@@ -119,6 +131,29 @@ func main() {
 			log.Fatal(err)
 		}
 	}
+}
+
+func runWorldClock(ctx context.Context, gameService *game.Service, worldID uint64, interval time.Duration, secondsPerTick uint64) {
+	if interval <= 0 || secondsPerTick == 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			gameService.AdvanceWorldTime(worldID, secondsPerTick)
+		}
+	}
+}
+
+func worldTimeRate(interval time.Duration, secondsPerTick uint64) float64 {
+	if interval <= 0 || secondsPerTick == 0 {
+		return 1
+	}
+	return float64(secondsPerTick) / interval.Seconds()
 }
 
 func runWorldCompactor(ctx context.Context, gameService *game.Service, interval time.Duration) {
