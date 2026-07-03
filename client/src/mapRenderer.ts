@@ -24,9 +24,17 @@ const COVER_MIXED_FOREST = 6;
 const COVER_FLAG_ROCK = 1;
 const COVER_FLAG_MOUNTAIN = 2;
 const BIOME_TEMPERATE_FOREST = 2;
+const FOG_CLEAR_TILES = CHUNK_SIZE * 0.8;
+const FOG_FULL_TILES = CHUNK_SIZE * 1.75;
+const FOG_MAX_ALPHA = 1;
+const FOG_RGB = [7, 11, 13] as const;
+const FOG_MASK_SCALE = 0.4;
+const FOG_SHAPE_POWER = 4;
 
 export class MapRenderer {
   private readonly ctx: CanvasRenderingContext2D;
+  private readonly fogCanvas: HTMLCanvasElement;
+  private readonly fogCtx: CanvasRenderingContext2D;
   private renderConfig = DEFAULT_RENDER_CONFIG;
   private colorNoise: ColorNoise = new ValueNoise(DEFAULT_RENDER_CONFIG.seed);
   private viewport: Viewport = { scale: 1, ox: 0, oy: 0, zoom: 2 };
@@ -37,6 +45,12 @@ export class MapRenderer {
       throw new Error("2d canvas context is unavailable");
     }
     this.ctx = context;
+    this.fogCanvas = document.createElement("canvas");
+    const fogContext = this.fogCanvas.getContext("2d");
+    if (!fogContext) {
+      throw new Error("2d fog canvas context is unavailable");
+    }
+    this.fogCtx = fogContext;
   }
 
   setRenderConfig(renderConfig: RenderConfig): void {
@@ -111,6 +125,7 @@ export class MapRenderer {
     }
 
     this.drawGrid(tile, centerX, centerY);
+    this.drawFogOverlay(actor, tile, centerX, centerY);
     this.drawActor(actor, tile, centerX, centerY);
   }
 
@@ -139,6 +154,48 @@ export class MapRenderer {
       this.ctx.fillStyle = this.cellColor(chunk, chunks, i, wx, wy);
       this.ctx.fillRect(x, y, Math.ceil(tile), Math.ceil(tile));
     }
+  }
+
+  private drawFogOverlay(actor: Actor, tile: number, ox: number, oy: number): void {
+    const width = Math.max(1, Math.ceil(this.canvas.width * FOG_MASK_SCALE));
+    const height = Math.max(1, Math.ceil(this.canvas.height * FOG_MASK_SCALE));
+    if (this.fogCanvas.width !== width || this.fogCanvas.height !== height) {
+      this.fogCanvas.width = width;
+      this.fogCanvas.height = height;
+    }
+
+    const image = this.fogCtx.createImageData(width, height);
+    const actorX = actor.x + 0.5;
+    const actorY = actor.y + 0.5;
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const screenX = (x + 0.5) / FOG_MASK_SCALE;
+        const screenY = (y + 0.5) / FOG_MASK_SCALE;
+        const wx = (screenX - ox) / tile;
+        const wy = (screenY - oy) / tile;
+        const alpha = this.fogAlpha(wx - actorX, wy - actorY);
+        const offset = (y * width + x) * 4;
+        image.data[offset] = FOG_RGB[0];
+        image.data[offset + 1] = FOG_RGB[1];
+        image.data[offset + 2] = FOG_RGB[2];
+        image.data[offset + 3] = Math.round(alpha * 255);
+      }
+    }
+    this.fogCtx.putImageData(image, 0, 0);
+
+    const previousSmoothing = this.ctx.imageSmoothingEnabled;
+    this.ctx.imageSmoothingEnabled = true;
+    this.ctx.drawImage(this.fogCanvas, 0, 0, this.canvas.width, this.canvas.height);
+    this.ctx.imageSmoothingEnabled = previousSmoothing;
+  }
+
+  private fogAlpha(dx: number, dy: number): number {
+    const distance = superellipseDistance(dx, dy, FOG_SHAPE_POWER);
+    const t = smoothstep(
+      (distance - FOG_CLEAR_TILES) / (FOG_FULL_TILES - FOG_CLEAR_TILES),
+    );
+    return clamp(t * FOG_MAX_ALPHA, 0, FOG_MAX_ALPHA);
   }
 
   private cellColor(
@@ -347,6 +404,18 @@ function shade(hex: string, amount: number): string {
     Math.max(0, Math.min(255, Math.round(part + amount))),
   );
   return `rgb(${channels.join(",")})`;
+}
+
+function superellipseDistance(dx: number, dy: number, power: number): number {
+  return Math.pow(
+    Math.pow(Math.abs(dx), power) + Math.pow(Math.abs(dy), power),
+    1 / power,
+  );
+}
+
+function smoothstep(value: number): number {
+  const t = clamp(value, 0, 1);
+  return t * t * (3 - 2 * t);
 }
 
 export function clamp(value: number, min: number, max: number): number {

@@ -78,12 +78,12 @@ Then start the API server with that map:
 ```bash
 GOCACHE=/home/talk/work/islands/.gocache go run ./cmd/islands \
   -world-map artifacts/generated/world.islmap \
-  -visible-chunk-radius 1 \
+  -visible-chunk-radius 2 \
   -storage-batch-interval 1s \
   -compact-world-interval 15m
 ```
 
-Use `-visible-chunk-radius 2` for a `5x5` live chunk window. If `-world-map` is omitted, the server starts with a small in-memory demo world.
+The default `-visible-chunk-radius 2` gives the client a `5x5` live chunk window, with the outer ring rendered under fog. Use `-visible-chunk-radius 1` for the smaller `3x3` window. If `-world-map` is omitted, the server starts with a small in-memory demo world.
 `world.islmap` stores the generator seed used by the frontend render palette/noise.
 
 When `-world-map` is provided, runtime chunk changes are appended to a journal next to the map file:
