@@ -129,6 +129,15 @@ func (s *Service) WorldChunks(worldID uint64) map[world.ChunkCoord]*world.Chunk 
 	return copyChunks(s.chunks[worldID])
 }
 
+func (s *Service) CompactWorld(ctx context.Context, worldID uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.store == nil {
+		return nil
+	}
+	return s.store.Compact(ctx, copyChunks(s.chunks[worldID]), s.tick)
+}
+
 func (s *Service) SetWorldRenderSeed(worldID uint64, seed string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -223,6 +232,7 @@ type ActionRequest struct {
 type ActionResult struct {
 	Accepted       bool            `json:"accepted"`
 	ClientActionID string          `json:"client_action_id,omitempty"`
+	ActionType     string          `json:"action_type,omitempty"`
 	Actor          actor.Actor     `json:"actor"`
 	Inventory      []InventoryItem `json:"inventory"`
 	EventID        uint64          `json:"event_id"`
@@ -238,6 +248,15 @@ func (s *Service) ApplyAction(ctx context.Context, worldID, actorID uint64, req 
 
 	switch req.ActionType {
 	case "move":
+		if !validMove(*act, req.X, req.Y) {
+			s.mu.Unlock()
+			return ActionResult{}, ErrInvalidAction
+		}
+		targetCoord, _ := world.ToChunkCoord(req.X, req.Y)
+		if s.loadedWorlds[worldID] && s.chunkLocked(worldID, targetCoord) == nil {
+			s.mu.Unlock()
+			return ActionResult{}, ErrNotVisible
+		}
 		oldCenter, _ := world.ToChunkCoord(act.X, act.Y)
 		previousX := act.X
 		previousY := act.Y
@@ -262,7 +281,7 @@ func (s *Service) ApplyAction(ctx context.Context, worldID, actorID uint64, req 
 		newChunks := interestDifference(interest, oldInterest)
 		changed := interestList(interest)
 		snapshots := s.chunkSnapshotsLocked(worldID, newChunks)
-		result := ActionResult{Accepted: true, ClientActionID: req.ClientActionID, Actor: *act, Inventory: s.inventorySnapshotLocked(*act), EventID: eventID}
+		result := ActionResult{Accepted: true, ClientActionID: req.ClientActionID, ActionType: req.ActionType, Actor: *act, Inventory: s.inventorySnapshotLocked(*act), EventID: eventID}
 		s.mu.Unlock()
 		s.hub.SetActorInterest(worldID, actorID, interest)
 		s.hub.Publish(realtime.Event{ID: eventID, Type: "entity_patch", WorldID: worldID, ChangedChunks: changed, Data: result})
@@ -320,10 +339,18 @@ func (s *Service) ApplyAction(ctx context.Context, worldID, actorID uint64, req 
 		}
 		eventID := s.nextEventIDLocked()
 		snapshot := snapshotChunk(ch, s.tick)
-		result := ActionResult{Accepted: true, ClientActionID: req.ClientActionID, Actor: *act, Inventory: s.inventorySnapshotLocked(*act), EventID: eventID}
+		result := ActionResult{Accepted: true, ClientActionID: req.ClientActionID, ActionType: req.ActionType, Actor: *act, Inventory: s.inventorySnapshotLocked(*act), EventID: eventID}
 		s.mu.Unlock()
 		s.hub.Publish(realtime.Event{
 			ID:            eventID,
+			Type:          "entity_patch",
+			WorldID:       worldID,
+			ChangedChunks: []world.ChunkCoord{coord},
+			Data:          result,
+		})
+		snapshotID := s.nextEventID()
+		s.hub.Publish(realtime.Event{
+			ID:            snapshotID,
 			Type:          "chunk_snapshot",
 			WorldID:       worldID,
 			ChangedChunks: []world.ChunkCoord{coord},
@@ -334,6 +361,18 @@ func (s *Service) ApplyAction(ctx context.Context, worldID, actorID uint64, req 
 		s.mu.Unlock()
 		return ActionResult{}, ErrInvalidAction
 	}
+}
+
+func validMove(act actor.Actor, x, y int32) bool {
+	dx := int64(x) - int64(act.X)
+	dy := int64(y) - int64(act.Y)
+	if dx < 0 {
+		dx = -dx
+	}
+	if dy < 0 {
+		dy = -dy
+	}
+	return dx+dy == 1
 }
 
 func (s *Service) ensureChunkLocked(worldID uint64, coord world.ChunkCoord) *world.Chunk {

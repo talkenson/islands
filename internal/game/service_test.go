@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"islands/internal/actor"
 	"islands/internal/mapgen"
 	"islands/internal/realtime"
 	"islands/internal/storage"
@@ -34,8 +35,8 @@ func TestHarvestPublishesOnlyToVisibleSubscribers(t *testing.T) {
 
 	select {
 	case event := <-visible.Events:
-		if event.Type != "chunk_snapshot" {
-			t.Fatalf("event type: got %q, want chunk_snapshot", event.Type)
+		if event.Type != "entity_patch" {
+			t.Fatalf("event type: got %q, want entity_patch", event.Type)
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("visible subscriber did not receive harvest update")
@@ -69,14 +70,29 @@ func TestLoadChunksUsesLoadedMapWithoutCreatingMissingChunks(t *testing.T) {
 func TestMovePublishesSnapshotsForNewVisibleChunks(t *testing.T) {
 	hub := realtime.NewHub()
 	service := NewService(hub, realtime.Config{VisibleChunkRadius: 0})
-	act := service.SeedDemoWorld(1)
-	startCoord, _ := world.ToChunkCoord(act.X, act.Y)
+	chunks := make(map[world.ChunkCoord]*world.Chunk)
+	for y := int32(-1); y <= 1; y++ {
+		for x := int32(-1); x <= 2; x++ {
+			chunks[world.ChunkCoord{X: x, Y: y}] = world.NewChunk(x, y)
+		}
+	}
+	if err := service.LoadWorld(1, storage.WorldState{
+		Width:  96,
+		Height: 96,
+		Seed:   "move-test",
+		Chunks: chunks,
+		Players: storage.PlayerState{Actors: map[actor.ID]*actor.Actor{
+			actor.ID(1): &actor.Actor{ID: 1, WorldID: 1, X: world.ChunkSize - 1, Y: 0, PocketInventoryID: 1},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	startCoord := world.ChunkCoord{X: 0, Y: 0}
 
 	client := hub.Subscribe(1, 1, map[world.ChunkCoord]struct{}{startCoord: {}})
 	defer hub.Unsubscribe(client.ID)
 
-	targetX := (startCoord.X + 1) * world.ChunkSize
-	result, err := service.ApplyAction(context.Background(), 1, 1, ActionRequest{ActionType: "move", X: targetX, Y: act.Y})
+	result, err := service.ApplyAction(context.Background(), 1, 1, ActionRequest{ActionType: "move", X: world.ChunkSize, Y: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,6 +112,21 @@ func TestMovePublishesSnapshotsForNewVisibleChunks(t *testing.T) {
 
 	if received[0] != "entity_patch" || received[1] != "chunk_snapshot" {
 		t.Fatalf("events: got %v, want [entity_patch chunk_snapshot]", received)
+	}
+}
+
+func TestMoveRejectsTeleport(t *testing.T) {
+	service := NewService(realtime.NewHub(), realtime.Config{VisibleChunkRadius: 1})
+	act := service.SeedDemoWorld(1)
+
+	_, err := service.ApplyAction(context.Background(), 1, 1, ActionRequest{
+		ActionType: "move",
+		X:          act.X + 2,
+		Y:          act.Y,
+	})
+
+	if err != ErrInvalidAction {
+		t.Fatalf("move error: got %v, want %v", err, ErrInvalidAction)
 	}
 }
 
@@ -152,7 +183,7 @@ func TestMovePersistsActorThroughFileStoreRestart(t *testing.T) {
 	}
 	service.SeedDemoActor(1)
 
-	if _, err := service.ApplyAction(context.Background(), 1, 1, ActionRequest{ActionType: "move", X: DemoActorStartX + 5, Y: DemoActorStartY - 2}); err != nil {
+	if _, err := service.ApplyAction(context.Background(), 1, 1, ActionRequest{ActionType: "move", X: DemoActorStartX + 1, Y: DemoActorStartY}); err != nil {
 		t.Fatalf("move: %v", err)
 	}
 
@@ -165,7 +196,7 @@ func TestMovePersistsActorThroughFileStoreRestart(t *testing.T) {
 	if act == nil {
 		t.Fatalf("actor was not persisted")
 	}
-	if act.X != DemoActorStartX+5 || act.Y != DemoActorStartY-2 {
+	if act.X != DemoActorStartX+1 || act.Y != DemoActorStartY {
 		t.Fatalf("actor position: got %d,%d", act.X, act.Y)
 	}
 }

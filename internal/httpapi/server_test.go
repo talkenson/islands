@@ -86,7 +86,7 @@ func TestActionsUseActorFromToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := bytes.NewBufferString(`{"action_type":"move","actor_id":999,"x":32,"y":0}`)
+	body := bytes.NewBufferString(`{"action_type":"move","actor_id":999,"x":901,"y":1900}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/worlds/1/actions", body)
 	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
@@ -103,8 +103,8 @@ func TestActionsUseActorFromToken(t *testing.T) {
 	if result.Actor.ID != 1 {
 		t.Fatalf("actor id: got %d, want token actor 1", result.Actor.ID)
 	}
-	if result.Actor.X != 32 {
-		t.Fatalf("actor x: got %d, want 32", result.Actor.X)
+	if result.Actor.X != game.DemoActorStartX+1 {
+		t.Fatalf("actor x: got %d, want %d", result.Actor.X, game.DemoActorStartX+1)
 	}
 }
 

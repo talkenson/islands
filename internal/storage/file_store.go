@@ -86,10 +86,17 @@ func (s *FileStore) LoadWorld(ctx context.Context) (WorldState, error) {
 }
 
 func (s *FileStore) SaveDirtyChunk(ctx context.Context, ch *world.Chunk, tick uint64) error {
+	return s.SaveDirtyChunks(ctx, []DirtyChunk{{Chunk: ch, Tick: tick}})
+}
+
+func (s *FileStore) SaveDirtyChunks(ctx context.Context, chunks []DirtyChunk) error {
 	_ = ctx
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if len(chunks) == 0 {
+		return nil
+	}
 	if s.journalPath == "" {
 		return fmt.Errorf("journal path is empty")
 	}
@@ -101,8 +108,13 @@ func (s *FileStore) SaveDirtyChunk(ctx context.Context, ch *world.Chunk, tick ui
 		return err
 	}
 	defer file.Close()
-	if err := writeJournalRecord(file, tick, ch); err != nil {
-		return err
+	for _, dirty := range chunks {
+		if dirty.Chunk == nil {
+			return fmt.Errorf("dirty chunk is nil")
+		}
+		if err := writeJournalRecord(file, dirty.Tick, dirty.Chunk); err != nil {
+			return err
+		}
 	}
 	return file.Sync()
 }

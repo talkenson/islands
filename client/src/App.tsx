@@ -60,6 +60,7 @@ export function App() {
   const [inventory, setInventory] = createSignal<InventoryItem[]>([]);
   const [hoveredCell, setHoveredCell] = createSignal<WorldCell | undefined>();
   const [selectedCell, setSelectedCell] = createSignal<WorldCell | undefined>();
+  const [worldRevision, setWorldRevision] = createSignal(0);
   const [collapsedPanels, setCollapsedPanels] = createSignal<
     Partial<Record<PanelID, boolean>>
   >({ events: true });
@@ -71,6 +72,7 @@ export function App() {
   });
   const selectedCellMeta = createMemo(() => {
     const cell = selectedCell();
+    worldRevision();
     return cell ? readCellMeta(chunks, cell) : undefined;
   });
   const selectedPosition = createMemo(() => {
@@ -186,21 +188,36 @@ export function App() {
     if (type === "chunk_snapshot") {
       const chunk = normalizeChunk(data as ChunkSnapshotWire);
       chunks.set(chunkKey(chunk.cx, chunk.cy), chunk);
+      setWorldRevision((revision) => revision + 1);
       redraw();
       return;
     }
     if (type === "entity_patch") {
       const patch = data as EntityPatchPayload | undefined;
       if (patch?.actor) {
+        const previousActor = actor();
         const nextActor = normalizeActor(patch.actor, worldID());
         setActor(nextActor);
         setInventory(normalizeInventory(patch.inventory));
-        addEvent(
-          "Перемещение",
-          `x=${nextActor.x}, y=${nextActor.y}, event=${id || patch.event_id || 0}`,
-        );
+        if (patch.action_type === "harvest") {
+          addEvent("Сбор", `event=${id || patch.event_id || 0}`);
+        } else if (
+          patch.action_type === "move" ||
+          previousActor.x !== nextActor.x ||
+          previousActor.y !== nextActor.y
+        ) {
+          addEvent(
+            "Перемещение",
+            `x=${nextActor.x}, y=${nextActor.y}, event=${id || patch.event_id || 0}`,
+          );
+        }
       }
       redraw();
+      return;
+    }
+    if (type === "stream_error") {
+      const payload = data as { message?: string } | undefined;
+      addEvent("Стрим", payload?.message || "ошибка события");
     }
   }
 
@@ -227,10 +244,10 @@ export function App() {
       if (result.data.inventory) {
         setInventory(normalizeInventory(result.data.inventory));
       }
-      if (actionType === "harvest") {
-        addEvent("Сбор", `event=${result.data.event_id || 0}`);
-      }
       redraw();
+    } catch (err) {
+      setStatus({ kind: "error", text: "ошибка действия" });
+      addEvent("Ошибка", errorMessage(err));
     } finally {
       setBusy(false);
     }

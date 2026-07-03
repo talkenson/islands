@@ -30,3 +30,12 @@ type Store interface {
 	Flush(ctx context.Context) error
 	Compact(ctx context.Context, chunks map[world.ChunkCoord]*world.Chunk, tick uint64) error
 }
+
+type DirtyChunk struct {
+	Chunk *world.Chunk
+	Tick  uint64
+}
+
+type DirtyChunkBatchWriter interface {
+	SaveDirtyChunks(ctx context.Context, chunks []DirtyChunk) error
+}

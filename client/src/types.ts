@@ -77,6 +77,7 @@ export interface ChunkSnapshot {
 export interface ActionResult {
   accepted?: boolean;
   client_action_id?: string;
+  action_type?: ActionType;
   actor?: ActorWire;
   inventory?: InventoryItemWire[];
   event_id?: number;

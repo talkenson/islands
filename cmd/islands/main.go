@@ -25,6 +25,10 @@ func main() {
 	worldJournal := flag.String("world-journal", "", "path to world journal; defaults next to -world-map")
 	worldPlayers := flag.String("world-players", "", "path to player state; defaults next to -world-map")
 	compactWorld := flag.Bool("compact-world", false, "compact journal into world map and exit")
+	compactWorldOnStart := flag.Bool("compact-world-on-start", false, "compact journal into world map before serving")
+	compactWorldInterval := flag.Duration("compact-world-interval", 0, "compact journal into world map while serving; 0 disables periodic compaction")
+	storageBatchInterval := flag.Duration("storage-batch-interval", time.Second, "batch dirty world writes for this duration; 0 writes synchronously")
+	storageBatchMaxChunks := flag.Int("storage-batch-max-chunks", 128, "flush batched storage early after this many dirty chunks")
 	flag.Parse()
 
 	hub := realtime.NewHub()
@@ -38,19 +42,29 @@ func main() {
 		if *worldPlayers == "" {
 			*worldPlayers = storage.DefaultPlayersPath(*worldMap)
 		}
-		store := storage.NewFileStore(*worldMap, *worldJournal, *worldPlayers)
-		loaded, err := store.LoadWorld(ctx)
+		fileStore := storage.NewFileStore(*worldMap, *worldJournal, *worldPlayers)
+		loaded, err := fileStore.LoadWorld(ctx)
 		if err != nil {
 			log.Fatal(err)
 		}
-		if *compactWorld {
-			if err := store.Compact(ctx, loaded.Chunks, loaded.Tick); err != nil {
+		if *compactWorld || *compactWorldOnStart {
+			if err := fileStore.Compact(ctx, loaded.Chunks, loaded.Tick); err != nil {
 				log.Fatal(err)
 			}
 			fmt.Printf("compacted world map %s and reset journal %s\n", *worldMap, *worldJournal)
+		}
+		if *compactWorld {
 			return
 		}
-		gameService.SetStore(store)
+		var runtimeStore storage.Store = fileStore
+		if *storageBatchInterval > 0 {
+			runtimeStore = storage.NewBatchingStore(fileStore, storage.BatchConfig{
+				FlushInterval:  *storageBatchInterval,
+				MaxDirtyChunks: *storageBatchMaxChunks,
+			})
+			fmt.Printf("storage batching enabled: interval=%s, max dirty chunks=%d\n", *storageBatchInterval, *storageBatchMaxChunks)
+		}
+		gameService.SetStore(runtimeStore)
 		if err := gameService.LoadWorld(1, loaded); err != nil {
 			log.Fatal(err)
 		}
@@ -70,6 +84,10 @@ func main() {
 
 	stopCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	if *worldMap != "" && *compactWorldInterval > 0 {
+		go runWorldCompactor(stopCtx, gameService, *compactWorldInterval)
+		fmt.Printf("periodic world compaction enabled: interval=%s\n", *compactWorldInterval)
+	}
 
 	fmt.Printf("islands backend listening on %s, visible radius=%d\n", *addr, cfg.VisibleChunkRadius)
 	select {
@@ -99,6 +117,28 @@ func main() {
 	case err := <-errs:
 		if err != nil && err != http.ErrServerClosed {
 			log.Fatal(err)
+		}
+	}
+}
+
+func runWorldCompactor(ctx context.Context, gameService *game.Service, interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			compactCtx, cancel := context.WithTimeout(ctx, interval)
+			if err := gameService.CompactWorld(compactCtx, 1); err != nil {
+				log.Printf("periodic world compaction failed: %v", err)
+			} else {
+				log.Printf("periodic world compaction completed")
+			}
+			cancel()
 		}
 	}
 }

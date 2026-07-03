@@ -78,7 +78,9 @@ Then start the API server with that map:
 ```bash
 GOCACHE=/home/talk/work/islands/.gocache go run ./cmd/islands \
   -world-map artifacts/generated/world.islmap \
-  -visible-chunk-radius 1
+  -visible-chunk-radius 1 \
+  -storage-batch-interval 1s \
+  -compact-world-interval 15m
 ```
 
 Use `-visible-chunk-radius 2` for a `5x5` live chunk window. If `-world-map` is omitted, the server starts with a small in-memory demo world.
@@ -99,6 +101,9 @@ artifacts/generated/world.players.json
 
 Pass `-world-players path/to/world.players.json` to choose a different player-state path.
 When the server receives Ctrl+C, it prints a shutdown message, saves player state, flushes storage, closes realtime streams, and then stops HTTP.
+Runtime storage writes are batched by default with `-storage-batch-interval 1s`; use `-storage-batch-interval 0` for synchronous writes.
+Dirty chunk journal writes are coalesced by chunk within a batch, and player state writes keep only the latest state in the batch.
+Use `-compact-world-on-start` to compact the journal before serving, or `-compact-world-interval 15m` to compact periodically while the server is running.
 
 To compact the journal back into the base map and start a fresh empty journal:
 

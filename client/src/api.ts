@@ -1,4 +1,14 @@
-import type { ActionResult, ActionType, LoginResponse, RealtimeEvent } from "./types";
+import type {
+  ActionResult,
+  ActionType,
+  LoginResponse,
+  RealtimeEvent,
+} from "./types";
+
+interface ErrorPayload {
+  code?: string;
+  message?: string;
+}
 
 export async function login(): Promise<LoginResponse> {
   const res = await fetch("/api/v1/auth/login", {
@@ -7,9 +17,10 @@ export async function login(): Promise<LoginResponse> {
     body: JSON.stringify({ user_id: 1, actor_id: 1, world_id: 1 }),
   });
   if (!res.ok) {
-    throw new Error(`login failed: ${res.status}`);
+    const error = await readPayload<ErrorPayload>(res);
+    throw new Error(error.message || error.code || `login failed: ${res.status}`);
   }
-  return await res.json() as LoginResponse;
+  return await readPayload<LoginResponse>(res);
 }
 
 export async function postAction(
@@ -32,7 +43,7 @@ export async function postAction(
   });
   return {
     ok: res.ok,
-    data: await res.json() as ActionResult,
+    data: await readPayload<ActionResult>(res),
     status: res.status,
   };
 }
@@ -49,12 +60,28 @@ export async function connectStream(
     headers["Last-Event-ID"] = String(lastEventID);
   }
 
-  const res = await fetch(`/api/v1/worlds/${worldID}/stream`, { headers, signal });
+  const res = await fetch(`/api/v1/worlds/${worldID}/stream`, {
+    headers,
+    signal,
+  });
   if (!res.ok || !res.body) {
-    throw new Error(`stream failed: ${res.status}`);
+    const error = await readPayload<ErrorPayload>(res);
+    throw new Error(error.message || error.code || `stream failed: ${res.status}`);
   }
 
   await readSSE(res.body, onEvent);
+}
+
+async function readPayload<T>(res: Response): Promise<T> {
+  const text = await res.text();
+  if (!text.trim()) {
+    return {} as T;
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return { message: text } as T;
+  }
 }
 
 async function readSSE(
@@ -68,20 +95,39 @@ async function readSSE(
   while (true) {
     const { value, done } = await reader.read();
     if (done) {
+      buffer += decoder.decode();
+      if (buffer.trim()) {
+        handleSSE(buffer, onEvent);
+      }
       break;
     }
     buffer += decoder.decode(value, { stream: true });
-    let splitAt = buffer.indexOf("\n\n");
-    while (splitAt !== -1) {
-      const raw = buffer.slice(0, splitAt);
-      buffer = buffer.slice(splitAt + 2);
+    let separator = findSSESeparator(buffer);
+    while (separator) {
+      const raw = buffer.slice(0, separator.index);
+      buffer = buffer.slice(separator.index + separator.length);
       handleSSE(raw, onEvent);
-      splitAt = buffer.indexOf("\n\n");
+      separator = findSSESeparator(buffer);
     }
   }
 }
 
-function handleSSE(raw: string, onEvent: (type: string, data: unknown, id: number) => void): void {
+function findSSESeparator(buffer: string): { index: number; length: number } | undefined {
+  const lf = buffer.indexOf("\n\n");
+  const crlf = buffer.indexOf("\r\n\r\n");
+  if (lf === -1 && crlf === -1) {
+    return undefined;
+  }
+  if (crlf !== -1 && (lf === -1 || crlf < lf)) {
+    return { index: crlf, length: 4 };
+  }
+  return { index: lf, length: 2 };
+}
+
+function handleSSE(
+  raw: string,
+  onEvent: (type: string, data: unknown, id: number) => void,
+): void {
   const lines = raw.split(/\r?\n/);
   let id = 0;
   let event = "message";
@@ -94,8 +140,12 @@ function handleSSE(raw: string, onEvent: (type: string, data: unknown, id: numbe
   if (data.length === 0) {
     return;
   }
-  const payload = JSON.parse(data.join("\n")) as RealtimeEvent;
-  onEvent(payload.type || event, payload.data, payload.id || id);
+  try {
+    const payload = JSON.parse(data.join("\n")) as RealtimeEvent;
+    onEvent(payload.type || event, payload.data, payload.id || id);
+  } catch {
+    onEvent("stream_error", { message: "invalid stream event" }, id);
+  }
 }
 
 export function isAbortError(err: unknown): boolean {

@@ -53,3 +53,29 @@ func TestHubCloseClosesSubscribers(t *testing.T) {
 		t.Fatalf("client channel was not closed")
 	}
 }
+
+func TestHubClosesSlowSubscriberInsteadOfDroppingSilently(t *testing.T) {
+	hub := NewHub()
+	client := hub.Subscribe(1, 1, map[world.ChunkCoord]struct{}{{X: 0, Y: 0}: {}})
+
+	for i := uint64(1); i <= 64; i++ {
+		hub.Publish(Event{
+			ID:            i,
+			Type:          "chunk_snapshot",
+			WorldID:       1,
+			ChangedChunks: []world.ChunkCoord{{X: 0, Y: 0}},
+		})
+	}
+
+	for {
+		select {
+		case _, ok := <-client.Events:
+			if !ok {
+				return
+			}
+		default:
+			t.Fatalf("slow subscriber channel is still open")
+			return
+		}
+	}
+}

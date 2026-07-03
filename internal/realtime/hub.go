@@ -106,6 +106,8 @@ func (h *Hub) Publish(event Event) {
 		select {
 		case client.events <- event:
 		default:
+			delete(h.clients, client.ID)
+			close(client.events)
 		}
 	}
 }
