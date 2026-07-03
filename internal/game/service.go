@@ -3,6 +3,7 @@ package game
 import (
 	"context"
 	"errors"
+	"sort"
 	"sync"
 
 	"islands/internal/actor"
@@ -23,14 +24,15 @@ const (
 	DemoActorStartX int32 = 900
 	DemoActorStartY int32 = 1900
 
-	ItemWood inventory.ItemID = 1
+	ItemWood        inventory.ItemID = 1
+	PocketSlotLimit                  = 9
 )
 
 type Service struct {
 	mu           sync.Mutex
 	actors       map[actor.ID]*actor.Actor
 	inventories  map[inventory.ID]*inventory.Inventory
-	stacks       map[inventory.ID]map[inventory.ItemID]*inventory.Stack
+	stacks       map[inventory.ID]*inventory.StackSet
 	chunks       map[uint64]map[world.ChunkCoord]*world.Chunk
 	loadedWorlds map[uint64]bool
 	renderSeeds  map[uint64]string
@@ -50,7 +52,7 @@ func NewService(hub *realtime.Hub, config realtime.Config) *Service {
 	return &Service{
 		actors:       make(map[actor.ID]*actor.Actor),
 		inventories:  make(map[inventory.ID]*inventory.Inventory),
-		stacks:       make(map[inventory.ID]map[inventory.ItemID]*inventory.Stack),
+		stacks:       make(map[inventory.ID]*inventory.StackSet),
 		chunks:       make(map[uint64]map[world.ChunkCoord]*world.Chunk),
 		loadedWorlds: make(map[uint64]bool),
 		renderSeeds:  make(map[uint64]string),
@@ -374,8 +376,11 @@ func (s *Service) ApplyAction(ctx context.Context, worldID, actorID uint64, req 
 		previousDirty := ch.Dirty
 		previousTick := s.tick
 		previousStack, hadStack := s.stackLocked(act.PocketInventoryID, ItemWood)
+		if !s.addStackLocked(act.PocketInventoryID, ItemWood, 1) {
+			s.mu.Unlock()
+			return ActionResult{}, ErrConflict
+		}
 		ch.Stock[index]--
-		s.addStackLocked(act.PocketInventoryID, ItemWood, 1)
 		ch.Dirty = true
 		s.tick++
 		store := s.store
@@ -529,15 +534,14 @@ func (s *Service) loadPlayersLocked(state storage.PlayerState) {
 		}
 	}
 	if len(state.Stacks) > 0 {
-		s.stacks = make(map[inventory.ID]map[inventory.ItemID]*inventory.Stack)
+		s.stacks = make(map[inventory.ID]*inventory.StackSet)
 		for _, stack := range state.Stacks {
-			copied := stack
-			byItem := s.stacks[stack.InventoryID]
-			if byItem == nil {
-				byItem = make(map[inventory.ItemID]*inventory.Stack)
-				s.stacks[stack.InventoryID] = byItem
+			stackSet := s.stacks[stack.InventoryID]
+			if stackSet == nil {
+				stackSet = inventory.NewStackSet()
+				s.stacks[stack.InventoryID] = stackSet
 			}
-			byItem[stack.ItemID] = &copied
+			stackSet.Add(stack, 0)
 		}
 	}
 	for _, act := range s.actors {
@@ -568,12 +572,15 @@ func (s *Service) playerStateLocked() storage.PlayerState {
 		copied := *inv
 		state.Inventories[id] = &copied
 	}
-	for _, byItem := range s.stacks {
-		for _, stack := range byItem {
-			if stack != nil && stack.Amount > 0 {
-				state.Stacks = append(state.Stacks, *stack)
-			}
-		}
+	stackInventoryIDs := make([]inventory.ID, 0, len(s.stacks))
+	for id := range s.stacks {
+		stackInventoryIDs = append(stackInventoryIDs, id)
+	}
+	sort.Slice(stackInventoryIDs, func(i, j int) bool {
+		return stackInventoryIDs[i] < stackInventoryIDs[j]
+	})
+	for _, id := range stackInventoryIDs {
+		state.Stacks = append(state.Stacks, s.stacks[id].Items(0)...)
 	}
 	return state
 }
@@ -601,59 +608,57 @@ func (s *Service) ensurePocketInventoryLocked(act actor.Actor) {
 	}
 }
 
-func (s *Service) addStackLocked(invID uint64, itemID inventory.ItemID, amount uint32) {
+func (s *Service) addStackLocked(invID uint64, itemID inventory.ItemID, amount uint32) bool {
 	id := inventory.ID(invID)
-	byItem := s.stacks[id]
-	if byItem == nil {
-		byItem = make(map[inventory.ItemID]*inventory.Stack)
-		s.stacks[id] = byItem
+	stackSet := s.stacks[id]
+	if stackSet == nil {
+		stackSet = inventory.NewStackSet()
+		s.stacks[id] = stackSet
 	}
-	stack := byItem[itemID]
-	if stack == nil {
-		stack = &inventory.Stack{InventoryID: id, ItemID: itemID}
-		byItem[itemID] = stack
+	if stackSet.Add(inventory.Stack{InventoryID: id, ItemID: itemID, Amount: amount}, s.inventorySlotLimitLocked(id)) {
+		return true
 	}
-	stack.Amount += amount
+	if stackSet.Len() == 0 {
+		delete(s.stacks, id)
+	}
+	return false
 }
 
 func (s *Service) stackLocked(invID uint64, itemID inventory.ItemID) (inventory.Stack, bool) {
-	byItem := s.stacks[inventory.ID(invID)]
-	if byItem == nil || byItem[itemID] == nil {
+	stackSet := s.stacks[inventory.ID(invID)]
+	if stackSet == nil {
 		return inventory.Stack{}, false
 	}
-	return *byItem[itemID], true
+	return stackSet.Get(itemID)
 }
 
 func (s *Service) restoreStackLocked(invID uint64, itemID inventory.ItemID, previous inventory.Stack, hadStack bool) {
 	id := inventory.ID(invID)
-	byItem := s.stacks[id]
+	stackSet := s.stacks[id]
 	if !hadStack {
-		if byItem != nil {
-			delete(byItem, itemID)
-			if len(byItem) == 0 {
+		if stackSet != nil {
+			stackSet.Restore(itemID, previous, false)
+			if stackSet.Len() == 0 {
 				delete(s.stacks, id)
 			}
 		}
 		return
 	}
-	if byItem == nil {
-		byItem = make(map[inventory.ItemID]*inventory.Stack)
-		s.stacks[id] = byItem
+	if stackSet == nil {
+		stackSet = inventory.NewStackSet()
+		s.stacks[id] = stackSet
 	}
-	copied := previous
-	byItem[itemID] = &copied
+	stackSet.Restore(itemID, previous, true)
 }
 
 func (s *Service) inventorySnapshotLocked(act actor.Actor) []InventoryItem {
-	byItem := s.stacks[inventory.ID(act.PocketInventoryID)]
-	if len(byItem) == 0 {
+	stackSet := s.stacks[inventory.ID(act.PocketInventoryID)]
+	if stackSet == nil || stackSet.Len() == 0 {
 		return nil
 	}
-	out := make([]InventoryItem, 0, len(byItem))
-	for _, stack := range byItem {
-		if stack == nil || stack.Amount == 0 {
-			continue
-		}
+	stacks := stackSet.Items(s.inventorySlotLimitLocked(inventory.ID(act.PocketInventoryID)))
+	out := make([]InventoryItem, 0, len(stacks))
+	for _, stack := range stacks {
 		out = append(out, InventoryItem{
 			ItemID:  stack.ItemID,
 			Name:    itemName(stack.ItemID),
@@ -662,6 +667,14 @@ func (s *Service) inventorySnapshotLocked(act actor.Actor) []InventoryItem {
 		})
 	}
 	return out
+}
+
+func (s *Service) inventorySlotLimitLocked(invID inventory.ID) int {
+	inv := s.inventories[invID]
+	if inv != nil && inv.Kind == inventory.KindPocket {
+		return PocketSlotLimit
+	}
+	return 0
 }
 
 func (s *Service) inventoryPatchLocked(act actor.Actor) InventoryPatch {

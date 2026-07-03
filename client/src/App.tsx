@@ -493,24 +493,6 @@ export function App() {
           </Panel>
 
           <Panel
-            title="Карман"
-            collapsed={isPanelCollapsed("inventory")}
-            summary={inventory().length}
-            onToggle={() => togglePanel("inventory")}
-          >
-            <ol class="inventory-list">
-              <For each={inventory()} fallback={<li>пусто</li>}>
-                {(item) => (
-                  <li>
-                    <b>{item.name}</b>
-                    <span>{item.amount}</span>
-                  </li>
-                )}
-              </For>
-            </ol>
-          </Panel>
-
-          <Panel
             title="Управление"
             collapsed={isPanelCollapsed("controls")}
             contentClass="controls"
@@ -601,6 +583,19 @@ export function App() {
             </ol>
           </Panel>
         </aside>
+
+        <section class="pocket-bar" aria-label="Карман">
+          <ol class="pocket-slots">
+            <For each={inventory()} fallback={<li class="pocket-slot empty">пусто</li>}>
+              {(item) => (
+                <li class="pocket-slot">
+                  <b>{item.name}</b>
+                  {item.amount > 1 ? <span>{item.amount}</span> : null}
+                </li>
+              )}
+            </For>
+          </ol>
+        </section>
       </section>
     </main>
   );

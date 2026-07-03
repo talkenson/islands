@@ -3,6 +3,7 @@ package game
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"islands/internal/actor"
+	"islands/internal/inventory"
 	"islands/internal/mapgen"
 	"islands/internal/realtime"
 	"islands/internal/storage"
@@ -302,6 +304,106 @@ func TestHarvestPublishesInventoryPatchToActor(t *testing.T) {
 		case <-time.After(20 * time.Millisecond):
 			return
 		}
+	}
+}
+
+func TestPocketInventoryPreservesSlotOrder(t *testing.T) {
+	service := NewService(nil, realtime.Config{})
+	act := service.SeedDemoActor(1)
+
+	service.mu.Lock()
+	if !service.addStackLocked(act.PocketInventoryID, inventory.ItemID(4), 1) {
+		t.Fatalf("add first stack")
+	}
+	if !service.addStackLocked(act.PocketInventoryID, inventory.ItemID(2), 1) {
+		t.Fatalf("add second stack")
+	}
+	snapshot := service.inventorySnapshotLocked(act)
+	service.mu.Unlock()
+
+	if len(snapshot) != 2 || snapshot[0].ItemID != 4 || snapshot[1].ItemID != 2 {
+		t.Fatalf("snapshot order: got %+v", snapshot)
+	}
+}
+
+func TestPocketInventorySlotLimitAllowsExistingStack(t *testing.T) {
+	service := NewService(nil, realtime.Config{})
+	act := service.SeedDemoActor(1)
+
+	service.mu.Lock()
+	for i := 0; i < PocketSlotLimit; i++ {
+		if !service.addStackLocked(act.PocketInventoryID, inventory.ItemID(100+i), 1) {
+			t.Fatalf("add stack %d", i)
+		}
+	}
+	if service.addStackLocked(act.PocketInventoryID, inventory.ItemID(200), 1) {
+		t.Fatalf("tenth new stack should not fit")
+	}
+	if !service.addStackLocked(act.PocketInventoryID, inventory.ItemID(100), 4) {
+		t.Fatalf("existing stack should fit")
+	}
+	snapshot := service.inventorySnapshotLocked(act)
+	service.mu.Unlock()
+
+	if len(snapshot) != PocketSlotLimit {
+		t.Fatalf("snapshot len: got %d, want %d", len(snapshot), PocketSlotLimit)
+	}
+	if snapshot[0].ItemID != 100 || snapshot[0].Amount != 5 {
+		t.Fatalf("first stack: got %+v", snapshot[0])
+	}
+}
+
+func TestPocketInventoryOrderSurvivesPlayerStateRoundTrip(t *testing.T) {
+	service := NewService(nil, realtime.Config{})
+	act := service.SeedDemoActor(1)
+
+	service.mu.Lock()
+	if !service.addStackLocked(act.PocketInventoryID, inventory.ItemID(7), 1) {
+		t.Fatalf("add first stack")
+	}
+	if !service.addStackLocked(act.PocketInventoryID, inventory.ItemID(3), 2) {
+		t.Fatalf("add second stack")
+	}
+	state := service.playerStateLocked()
+	service.mu.Unlock()
+
+	loaded := NewService(nil, realtime.Config{})
+	loaded.mu.Lock()
+	loaded.loadPlayersLocked(state)
+	snapshot := loaded.inventorySnapshotLocked(act)
+	loaded.mu.Unlock()
+
+	if len(snapshot) != 2 || snapshot[0].ItemID != 7 || snapshot[1].ItemID != 3 {
+		t.Fatalf("snapshot order after load: got %+v", snapshot)
+	}
+}
+
+func TestHarvestWithFullPocketDoesNotConsumeStock(t *testing.T) {
+	service := NewService(nil, realtime.Config{VisibleChunkRadius: 1})
+	act := service.SeedDemoWorld(1)
+
+	service.mu.Lock()
+	for i := 0; i < PocketSlotLimit; i++ {
+		if !service.addStackLocked(act.PocketInventoryID, inventory.ItemID(100+i), 1) {
+			t.Fatalf("add stack %d", i)
+		}
+	}
+	coord, index := world.ToChunkCoord(act.X, act.Y)
+	ch := service.chunkLocked(1, coord)
+	previousStock := ch.Stock[index]
+	service.mu.Unlock()
+
+	if _, err := service.ApplyAction(context.Background(), 1, uint64(act.ID), ActionRequest{ActionType: "harvest"}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("harvest err: got %v, want %v", err, ErrConflict)
+	}
+
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	if ch.Stock[index] != previousStock {
+		t.Fatalf("stock: got %d, want %d", ch.Stock[index], previousStock)
+	}
+	if len(service.inventorySnapshotLocked(act)) != PocketSlotLimit {
+		t.Fatalf("inventory changed: got %+v", service.inventorySnapshotLocked(act))
 	}
 }
 

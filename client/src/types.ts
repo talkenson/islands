@@ -1,6 +1,6 @@
 export type StatusKind = "idle" | "live" | "error";
 export type ActionType = "move" | "harvest";
-export type PanelID = "actor" | "cell" | "inventory" | "controls" | "events";
+export type PanelID = "actor" | "cell" | "controls" | "events";
 
 export interface LogEvent {
   id: number;

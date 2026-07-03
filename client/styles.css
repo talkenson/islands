@@ -103,8 +103,8 @@ h1 {
 .status {
   display: inline-flex;
   position: fixed;
-  bottom: 16px;
-  right: 16px;
+  top: 80px;
+  left: 16px;
   align-items: center;
   gap: 9px;
   min-height: 34px;
@@ -390,37 +390,63 @@ h1 {
   list-style: none;
 }
 
-.inventory-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+.pocket-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 16px;
+  width: min(860px, calc(100vw - 32px));
+  transform: translateX(-50%);
 }
 
-.inventory-list li {
-  display: flex;
+.pocket-slots {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(76px, 1fr);
+  gap: 8px;
+  margin: 0;
+  padding: 8px;
+  border: 1px solid rgba(45, 57, 58, 0.9);
+  background: rgba(16, 20, 23, 0.88);
+  border-radius: 8px;
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.28);
+  list-style: none;
+  backdrop-filter: blur(10px);
+  overflow-x: auto;
+}
+
+.pocket-slot {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 34px;
-  padding: 8px 10px;
+  gap: 8px;
+  min-width: 0;
+  min-height: 54px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
   background: var(--panel-2);
   border-radius: 6px;
   color: var(--muted);
 }
 
-.inventory-list b {
+.pocket-slot b {
   min-width: 0;
   color: var(--text);
+  font-size: 13px;
   font-weight: 650;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.inventory-list span {
+.pocket-slot span {
   color: var(--accent);
-  font-weight: 700;
+  font-weight: 750;
+}
+
+.pocket-slot.empty {
+  display: flex;
+  justify-content: center;
+  color: var(--muted);
 }
 
 .event-log li {
@@ -492,6 +518,27 @@ h1 {
     max-height: 160px;
     min-height: 120px;
   }
+
+  .status {
+    right: 12px;
+    bottom: 92px;
+  }
+
+  .pocket-bar {
+    bottom: 12px;
+    width: calc(100vw - 24px);
+  }
+
+  .pocket-slots {
+    grid-auto-columns: minmax(70px, 1fr);
+    gap: 6px;
+    padding: 6px;
+  }
+
+  .pocket-slot {
+    min-height: 50px;
+    padding: 8px;
+  }
 }
 
 @media (max-width: 560px) {
@@ -506,5 +553,22 @@ h1 {
   .event-log {
     max-height: 118px;
     min-height: 96px;
+  }
+
+  .status {
+    bottom: 86px;
+    max-width: calc(100vw - 24px);
+  }
+
+  .pocket-slots {
+    grid-auto-columns: minmax(64px, 1fr);
+  }
+
+  .pocket-slot {
+    min-height: 46px;
+  }
+
+  .pocket-slot b {
+    font-size: 12px;
   }
 }
