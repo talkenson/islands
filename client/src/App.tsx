@@ -13,6 +13,8 @@ import {
   normalizeChunk,
   normalizeInventory,
 } from "./chunks";
+import { readCellMeta } from "./cellMeta";
+import { Panel } from "./components/Panel";
 import { MAX_ZOOM, MIN_ZOOM } from "./config";
 import { MapRenderer } from "./mapRenderer";
 import type {
@@ -23,14 +25,11 @@ import type {
   EntityPatchPayload,
   HelloPayload,
   InventoryItem,
+  LogEvent,
+  PanelID,
   StatusKind,
+  WorldCell,
 } from "./types";
-
-interface LogEvent {
-  id: number;
-  title: string;
-  detail?: string | number;
-}
 
 export function App() {
   let canvasRef!: HTMLCanvasElement;
@@ -59,8 +58,25 @@ export function App() {
   const [hudHidden, setHudHidden] = createSignal(false);
   const [events, setEvents] = createSignal<LogEvent[]>([]);
   const [inventory, setInventory] = createSignal<InventoryItem[]>([]);
+  const [hoveredCell, setHoveredCell] = createSignal<WorldCell | undefined>();
+  const [selectedCell, setSelectedCell] = createSignal<WorldCell | undefined>();
+  const [collapsedPanels, setCollapsedPanels] = createSignal<
+    Partial<Record<PanelID, boolean>>
+  >({ events: true });
 
   const actorPosition = createMemo(() => `${actor().x}, ${actor().y}`);
+  const hoveredPosition = createMemo(() => {
+    const cell = hoveredCell();
+    return cell ? `${cell.x}, ${cell.y}` : "-";
+  });
+  const selectedCellMeta = createMemo(() => {
+    const cell = selectedCell();
+    return cell ? readCellMeta(chunks, cell) : undefined;
+  });
+  const selectedPosition = createMemo(() => {
+    const cell = selectedCell();
+    return cell ? `${cell.x}, ${cell.y}` : "-";
+  });
   const subtitle = createMemo(() => `Пользователь #${actor().id}`);
   const inventoryTotal = createMemo(() =>
     inventory().reduce((sum, item) => sum + item.amount, 0),
@@ -230,6 +246,23 @@ export function App() {
     renderer?.zoom(event.deltaY, MIN_ZOOM, MAX_ZOOM, actor(), chunks);
   }
 
+  function trackHover(event: MouseEvent): void {
+    setHoveredCell(renderer?.cellAtClientPoint(event.clientX, event.clientY));
+  }
+
+  function selectHoveredCell(event: MouseEvent): void {
+    const cell = renderer?.cellAtClientPoint(event.clientX, event.clientY);
+    setSelectedCell(cell);
+  }
+
+  function isPanelCollapsed(id: PanelID): boolean {
+    return collapsedPanels()[id] || false;
+  }
+
+  function togglePanel(id: PanelID): void {
+    setCollapsedPanels((current) => ({ ...current, [id]: !current[id] }));
+  }
+
   return (
     <main class="app-root">
       <section class="map-layer" aria-label="Карта мира">
@@ -238,6 +271,9 @@ export function App() {
           id="worldCanvas"
           width="768"
           height="768"
+          onClick={selectHoveredCell}
+          onMouseLeave={() => setHoveredCell(undefined)}
+          onMouseMove={trackHover}
           onWheel={zoomCanvas}
         />
         <div classList={{ "map-empty": true, hidden: chunkCount() > 0 }}>
@@ -281,12 +317,14 @@ export function App() {
         </div>
 
         <aside class="sidebar" aria-label="Панель управления">
-          <section class="panel">
-            <div class="panel-title">
-              <span>Актёр</span>
-              <strong>{actorPosition()}</strong>
-            </div>
-            <div class="stats">
+          <Panel
+            title="Актёр"
+            collapsed={isPanelCollapsed("actor")}
+            summary={actorPosition()}
+            contentClass="stats"
+            onToggle={() => togglePanel("actor")}
+          >
+            <>
               <div>
                 <span>Чанков</span>
                 <strong>{chunkCount()}</strong>
@@ -296,17 +334,95 @@ export function App() {
                 <strong>{cellStock()}</strong>
               </div>
               <div>
+                <span>Курсор</span>
+                <strong>{hoveredPosition()}</strong>
+              </div>
+              <div>
                 <span>Инвентарь</span>
                 <strong>{inventoryTotal()}</strong>
               </div>
-            </div>
-          </section>
+            </>
+          </Panel>
 
-          <section class="panel">
-            <div class="panel-title">
-              <span>Карман</span>
-              <strong>{inventory().length}</strong>
-            </div>
+          <Panel
+            title="Клетка"
+            collapsed={isPanelCollapsed("cell")}
+            summary={selectedPosition()}
+            onToggle={() => togglePanel("cell")}
+          >
+            {selectedCell() ? (
+              selectedCellMeta() ? (
+                <dl class="cell-meta">
+                  <div>
+                    <dt>Биом</dt>
+                    <dd>{selectedCellMeta()?.biome}</dd>
+                  </div>
+                  <div>
+                    <dt>Почва</dt>
+                    <dd>{selectedCellMeta()?.soil}</dd>
+                  </div>
+                  <div>
+                    <dt>Вода</dt>
+                    <dd>
+                      {selectedCellMeta()?.water}
+                      {selectedCellMeta()?.waterTidal ? " tidal" : ""}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Покров</dt>
+                    <dd>{selectedCellMeta()?.cover}</dd>
+                  </div>
+                  <div>
+                    <dt>Высота</dt>
+                    <dd>
+                      {selectedCellMeta()?.height}/
+                      {selectedCellMeta()?.elevation}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Запас</dt>
+                    <dd>{selectedCellMeta()?.stock}</dd>
+                  </div>
+                  <div>
+                    <dt>Уровни</dt>
+                    <dd>
+                      w{selectedCellMeta()?.waterLevel} c
+                      {selectedCellMeta()?.coverLevel}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Флаги</dt>
+                    <dd>
+                      b{selectedCellMeta()?.baseFlags} c
+                      {selectedCellMeta()?.coverFlags}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Чанк</dt>
+                    <dd>
+                      {selectedCellMeta()?.cx}, {selectedCellMeta()?.cy} #
+                      {selectedCellMeta()?.index}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Тик</dt>
+                    <dd>{selectedCellMeta()?.updatedTick}</dd>
+                  </div>
+                </dl>
+              ) : (
+                <p class="panel-empty">чанк не загружен</p>
+              )
+            ) : (
+              <p class="panel-empty">кликни по карте</p>
+            )}
+          </Panel>
+
+          <Panel
+            title="Карман"
+            collapsed={isPanelCollapsed("inventory")}
+            summary={inventory().length}
+            onToggle={() => togglePanel("inventory")}
+          >
             <ol class="inventory-list">
               <For each={inventory()} fallback={<li>пусто</li>}>
                 {(item) => (
@@ -317,9 +433,14 @@ export function App() {
                 )}
               </For>
             </ol>
-          </section>
+          </Panel>
 
-          <section class="panel controls">
+          <Panel
+            title="Управление"
+            collapsed={isPanelCollapsed("controls")}
+            contentClass="controls"
+            onToggle={() => togglePanel("controls")}
+          >
             <button
               class="icon-button"
               id="moveUp"
@@ -375,11 +496,13 @@ export function App() {
             >
               ↓
             </button>
-          </section>
+          </Panel>
 
-          <section class="panel">
-            <div class="panel-title">
-              <span>События</span>
+          <Panel
+            title="События"
+            collapsed={isPanelCollapsed("events")}
+            summary={events().length}
+            actions={
               <button
                 type="button"
                 disabled={busy()}
@@ -388,7 +511,9 @@ export function App() {
               >
                 обновить
               </button>
-            </div>
+            }
+            onToggle={() => togglePanel("events")}
+          >
             <ol class="event-log">
               <For each={events()}>
                 {(event) => (
@@ -399,7 +524,7 @@ export function App() {
                 )}
               </For>
             </ol>
-          </section>
+          </Panel>
         </aside>
       </section>
     </main>

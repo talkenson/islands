@@ -2,7 +2,13 @@ import { CHUNK_SIZE, DEFAULT_RENDER_CONFIG, TILE_SIZE } from "./config";
 import type { ColorNoise } from "./noise";
 import { ValueNoise } from "./noise";
 import { chunkKey } from "./chunks";
-import type { Actor, ChunkSnapshot, RenderConfig, Viewport } from "./types";
+import type {
+  Actor,
+  ChunkSnapshot,
+  RenderConfig,
+  Viewport,
+  WorldCell,
+} from "./types";
 
 const WATER_NONE = 0;
 const WATER_SEA = 1;
@@ -60,6 +66,25 @@ export class MapRenderer {
     }
     this.viewport.zoom = nextZoom;
     this.draw(actor, chunks);
+  }
+
+  cellAtClientPoint(clientX: number, clientY: number): WorldCell | undefined {
+    const rect = this.canvas.getBoundingClientRect();
+    if (
+      clientX < rect.left ||
+      clientY < rect.top ||
+      clientX > rect.right ||
+      clientY > rect.bottom
+    ) {
+      return undefined;
+    }
+
+    const px = (clientX - rect.left) * (this.canvas.width / rect.width);
+    const py = (clientY - rect.top) * (this.canvas.height / rect.height);
+    return {
+      x: Math.floor((px - this.viewport.ox) / this.viewport.scale),
+      y: Math.floor((py - this.viewport.oy) / this.viewport.scale),
+    };
   }
 
   draw(actor: Actor, chunks: Map<string, ChunkSnapshot>): void {

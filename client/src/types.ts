@@ -1,5 +1,12 @@
 export type StatusKind = "idle" | "live" | "error";
 export type ActionType = "move" | "harvest";
+export type PanelID = "actor" | "cell" | "inventory" | "controls" | "events";
+
+export interface LogEvent {
+  id: number;
+  title: string;
+  detail?: string | number;
+}
 
 export interface Actor {
   id: number;
@@ -99,6 +106,11 @@ export interface ChunkPosition {
   cx: number;
   cy: number;
   index: number;
+}
+
+export interface WorldCell {
+  x: number;
+  y: number;
 }
 
 export interface RenderConfig {
