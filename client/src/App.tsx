@@ -398,6 +398,10 @@ export function App() {
                     </dd>
                   </div>
                   <div>
+                    <dt>Температура</dt>
+                    <dd>{selectedCellMeta()?.temperature}</dd>
+                  </div>
+                  <div>
                     <dt>Запас</dt>
                     <dd>{selectedCellMeta()?.stock}</dd>
                   </div>

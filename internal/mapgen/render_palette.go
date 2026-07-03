@@ -62,17 +62,23 @@ var DefaultRenderPalette = RenderPalette{
 		Bush:        hexColor("#756f35"),
 	},
 	Biomes: map[world.Biome][]color.RGBA{
-		world.BiomeSteppe: {
-			hexColor("#8f9f52"),
-			hexColor("#a6b866"),
-			hexColor("#b8c878"),
-			hexColor("#7f8f48"),
+		world.BiomeTaiga: {
+			hexColor("#42624b"),
+			hexColor("#385640"),
+			hexColor("#4f7055"),
+			hexColor("#314939"),
 		},
-		world.BiomeMarsh: {
-			hexColor("#4f735f"),
-			hexColor("#5a806a"),
-			hexColor("#3f604f"),
-			hexColor("#63766a"),
+		world.BiomeBirchForest: {
+			hexColor("#6fa85f"),
+			hexColor("#7bb96b"),
+			hexColor("#5f984f"),
+			hexColor("#83ad64"),
+		},
+		world.BiomeTemperateForest: {
+			hexColor("#597f52"),
+			hexColor("#638c5b"),
+			hexColor("#4e704a"),
+			hexColor("#729762"),
 		},
 		world.BiomeRiverValley: {
 			hexColor("#5f984f"),
@@ -80,11 +86,35 @@ var DefaultRenderPalette = RenderPalette{
 			hexColor("#83ad64"),
 			hexColor("#7bb96b"),
 		},
-		world.BiomeTemperateForest: {
-			hexColor("#6fa85f"),
-			hexColor("#7bb96b"),
-			hexColor("#5f984f"),
-			hexColor("#83ad64"),
+		world.BiomeCoast: {
+			hexColor("#cdbb7b"),
+			hexColor("#d6bd75"),
+			hexColor("#b9aa78"),
+			hexColor("#a9a083"),
+		},
+		world.BiomeMarsh: {
+			hexColor("#4f735f"),
+			hexColor("#5a806a"),
+			hexColor("#3f604f"),
+			hexColor("#63766a"),
+		},
+		world.BiomeSteppe: {
+			hexColor("#8f9f52"),
+			hexColor("#a6b866"),
+			hexColor("#b8c878"),
+			hexColor("#7f8f48"),
+		},
+		world.BiomeDesert: {
+			hexColor("#d7c27a"),
+			hexColor("#c9ad62"),
+			hexColor("#e0cf91"),
+			hexColor("#b99a55"),
+		},
+		world.BiomeMeadow: {
+			hexColor("#88aa5d"),
+			hexColor("#9bbb66"),
+			hexColor("#79a15a"),
+			hexColor("#a8c874"),
 		},
 	},
 }

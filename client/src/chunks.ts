@@ -42,6 +42,7 @@ export function normalizeChunk(data: ChunkSnapshotWire): ChunkSnapshot {
     cover: data.cover || [],
     stock: data.stock || [],
     meta: decodeByteLayer(data.meta),
+    temperature: decodeByteLayer(data.temperature),
     updatedTick: data.updated_tick || 0,
   };
 }

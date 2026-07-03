@@ -6,24 +6,26 @@ type Chunk struct {
 	X int32
 	Y int32
 
-	Base  []uint16
-	Water []uint8
-	Cover []uint16
-	Stock []uint16
-	Meta  []uint8
+	Base        []uint16
+	Water       []uint8
+	Cover       []uint16
+	Stock       []uint16
+	Meta        []uint8
+	Temperature []uint8
 
 	Dirty bool
 }
 
 func NewChunk(x, y int32) *Chunk {
 	return &Chunk{
-		X:     x,
-		Y:     y,
-		Base:  make([]uint16, ChunkCells),
-		Water: make([]uint8, ChunkCells),
-		Cover: make([]uint16, ChunkCells),
-		Stock: make([]uint16, ChunkCells),
-		Meta:  make([]uint8, ChunkCells),
+		X:           x,
+		Y:           y,
+		Base:        make([]uint16, ChunkCells),
+		Water:       make([]uint8, ChunkCells),
+		Cover:       make([]uint16, ChunkCells),
+		Stock:       make([]uint16, ChunkCells),
+		Meta:        make([]uint8, ChunkCells),
+		Temperature: make([]uint8, ChunkCells),
 	}
 }
 
@@ -42,6 +44,9 @@ func (c *Chunk) Validate() error {
 	}
 	if len(c.Meta) != ChunkCells {
 		return fmt.Errorf("meta length: got %d, want %d", len(c.Meta), ChunkCells)
+	}
+	if len(c.Temperature) != ChunkCells {
+		return fmt.Errorf("temperature length: got %d, want %d", len(c.Temperature), ChunkCells)
 	}
 	return nil
 }

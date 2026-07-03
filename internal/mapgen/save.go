@@ -9,7 +9,7 @@ import (
 	"islands/internal/world"
 )
 
-var mapMagic = [8]byte{'I', 'S', 'L', 'M', 'A', 'P', '0', '1'}
+var mapMagic = [8]byte{'I', 'S', 'L', 'M', 'A', 'P', '0', '2'}
 
 func SaveBinary(w io.Writer, m *Map) error {
 	if _, err := w.Write(mapMagic[:]); err != nil {
@@ -71,6 +71,9 @@ func SaveBinary(w io.Writer, m *Map) error {
 			return err
 		}
 		if _, err := w.Write(ch.Meta); err != nil {
+			return err
+		}
+		if _, err := w.Write(ch.Temperature); err != nil {
 			return err
 		}
 	}
@@ -148,6 +151,9 @@ func LoadBinary(r io.Reader) (*Map, error) {
 			return nil, err
 		}
 		if _, err := io.ReadFull(r, ch.Meta); err != nil {
+			return nil, err
+		}
+		if _, err := io.ReadFull(r, ch.Temperature); err != nil {
 			return nil, err
 		}
 		m.Chunks[world.ChunkCoord{X: cx, Y: cy}] = ch

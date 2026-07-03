@@ -8,13 +8,14 @@ import (
 	"islands/internal/world"
 )
 
-var chunkMagic = [8]byte{'I', 'S', 'L', 'C', 'H', 'N', 'K', '1'}
+var chunkMagic = [8]byte{'I', 'S', 'L', 'C', 'H', 'N', 'K', '2'}
 
 const chunkPayloadSize = 8 + 4 + 4 +
 	world.ChunkCells*2 +
 	world.ChunkCells +
 	world.ChunkCells*2 +
 	world.ChunkCells*2 +
+	world.ChunkCells +
 	world.ChunkCells
 
 func EncodeChunk(ch *world.Chunk) ([]byte, error) {
@@ -36,6 +37,8 @@ func EncodeChunk(ch *world.Chunk) ([]byte, error) {
 	offset = putUint16s(buf, offset, ch.Cover)
 	offset = putUint16s(buf, offset, ch.Stock)
 	copy(buf[offset:], ch.Meta)
+	offset += len(ch.Meta)
+	copy(buf[offset:], ch.Temperature)
 	return buf, nil
 }
 
@@ -59,6 +62,8 @@ func DecodeChunk(payload []byte) (*world.Chunk, error) {
 	offset = readUint16s(payload, offset, ch.Cover)
 	offset = readUint16s(payload, offset, ch.Stock)
 	copy(ch.Meta, payload[offset:offset+world.ChunkCells])
+	offset += world.ChunkCells
+	copy(ch.Temperature, payload[offset:offset+world.ChunkCells])
 	if err := ch.Validate(); err != nil {
 		return nil, err
 	}

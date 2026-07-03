@@ -5,12 +5,15 @@ type Biome uint8
 const (
 	BiomeUnknown Biome = iota
 	BiomeTaiga
+	BiomeBirchForest
 	BiomeTemperateForest
 	BiomeRiverValley
 	BiomeCoast
 	BiomeMarsh
 	BiomeSteppe
 	BiomeMountain
+	BiomeDesert
+	BiomeMeadow
 )
 
 type Soil uint8

@@ -247,6 +247,7 @@ func copyChunk(ch *world.Chunk) *world.Chunk {
 	copy(next.Cover, ch.Cover)
 	copy(next.Stock, ch.Stock)
 	copy(next.Meta, ch.Meta)
+	copy(next.Temperature, ch.Temperature)
 	next.Dirty = ch.Dirty
 	return next
 }

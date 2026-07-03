@@ -87,16 +87,16 @@ func DefaultConfig() Config {
 		ShallowWaterScale:       0.045,
 
 		RiverCount:           200,
-		MinRiverLength:       60,
-		RiverMeanderScale:    0.055,
-		RiverMeanderStrength: 0.18,
+		MinRiverLength:       100,
+		RiverMeanderScale:    0.085,
+		RiverMeanderStrength: 0.19,
 		RiverMinWidth:        1,
 		RiverMaxWidth:        6,
 
 		RockScale:         0.035,
 		RockThreshold:     0.8,
 		RockyBeachChance:  0.38,
-		MountainHeight:    0.72,
+		MountainHeight:    0.88,
 		MountainScale:     0.018,
 		MountainThreshold: 0.57,
 	}

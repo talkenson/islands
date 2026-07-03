@@ -113,6 +113,7 @@ func (s *Service) LoadChunks(worldID uint64, chunks map[world.ChunkCoord]*world.
 		copy(copied.Cover, ch.Cover)
 		copy(copied.Stock, ch.Stock)
 		copy(copied.Meta, ch.Meta)
+		copy(copied.Temperature, ch.Temperature)
 		loaded[coord] = copied
 	}
 
@@ -198,6 +199,7 @@ type ChunkSnapshot struct {
 	Cover       []uint16 `json:"cover"`
 	Stock       []uint16 `json:"stock"`
 	Meta        []uint8  `json:"meta"`
+	Temperature []uint8  `json:"temperature"`
 	UpdatedTick uint64   `json:"updated_tick"`
 }
 
@@ -610,6 +612,7 @@ func snapshotChunk(ch *world.Chunk, tick uint64) ChunkSnapshot {
 		Cover:       append([]uint16(nil), ch.Cover...),
 		Stock:       append([]uint16(nil), ch.Stock...),
 		Meta:        append([]uint8(nil), ch.Meta...),
+		Temperature: append([]uint8(nil), ch.Temperature...),
 		UpdatedTick: tick,
 	}
 }
@@ -644,6 +647,7 @@ func copyChunks(chunks map[world.ChunkCoord]*world.Chunk) map[world.ChunkCoord]*
 		copy(next.Cover, ch.Cover)
 		copy(next.Stock, ch.Stock)
 		copy(next.Meta, ch.Meta)
+		copy(next.Temperature, ch.Temperature)
 		next.Dirty = ch.Dirty
 		copied[coord] = next
 	}

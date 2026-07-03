@@ -13,6 +13,11 @@ import (
 const (
 	coverFlagRock uint8 = 1 << iota
 	coverFlagMountain
+
+	forcedMountainHeight = 0.91
+	highlandHeight       = 0.74
+	marshMaxHeight       = 0.56
+	desertMaxHeight      = 0.64
 )
 
 func Generate(config Config) (*Map, error) {
@@ -258,26 +263,29 @@ func createCell(m *Map, x, y int, config Config, continents []Continent, heightN
 	height := clamp((continentInfluence*0.88+roughHeight*0.22-basinDepth)*edgeFalloff, 0, 1)
 	moisture := clamp(moistureNoise.octaveNoise2D(float64(x)*config.MoistureScale, float64(y)*config.MoistureScale, 4, 0.56), 0, 1)
 	latitude := math.Abs(float64(y)/float64(config.Height)-0.5) * 2
-	temperature := clamp(temperatureNoise.octaveNoise2D(float64(x)*config.TemperatureScale, float64(y)*config.TemperatureScale, 4, 0.5)*0.48+(1-latitude)*0.52, 0, 1)
+	rawTemperature := clamp(temperatureNoise.octaveNoise2D(float64(x)*config.TemperatureScale, float64(y)*config.TemperatureScale, 4, 0.5)*0.48+(1-latitude)*0.52, 0, 1)
+	temperature := effectiveTemperature(rawTemperature, height, config)
 
 	if height <= config.LandThreshold {
 		m.setHeight(x, y, height)
 		setCell(m, x, y, world.PackBase(world.BiomeCoast, world.SoilWater, uint8(height*31), 0), world.PackWater(world.WaterSea, 4, false), world.PackCover(world.CoverNone, 0, 0), 0)
+		setTemperature(m, x, y, temperature)
 		return
 	}
 
 	m.setHeight(x, y, height)
-	biome, soil := chooseBiome(moisture, temperature)
+	biome, soil := chooseBiome(height, moisture, temperature, config)
 	cover := world.CoverGrass
 	level := uint8(1 + math.Round(moisture*2))
 	stock := uint16(0)
-	if forestKind, density, ok := createForest(x, y, moisture, biome, forestNoise, config); ok {
+	if forestKind, density, ok := createForest(x, y, moisture, temperature, biome, forestNoise, config); ok {
 		cover = forestKind
 		level = uint8(clamp(math.Round(1+density*4), 1, 5))
 		stock = uint16(math.Round(6 + density*18))
 	}
 
 	setCell(m, x, y, world.PackBase(biome, soil, uint8(height*31), 0), world.PackWater(world.WaterNone, 0, false), world.PackCover(cover, level, 0), stock)
+	setTemperature(m, x, y, temperature)
 }
 
 func getLakeBasinDepth(x, y, continentInfluence, edgeFalloff float64, continents []Continent, config Config, lakeNoise *valueNoise) float64 {
@@ -341,30 +349,74 @@ func getEdgeFalloff(x, y float64, config Config) float64 {
 	return clamp(math.Min(dx, dy), 0, 1)
 }
 
-func chooseBiome(moisture, temperature float64) (world.Biome, world.Soil) {
-	if moisture < 0.34 && temperature > 0.35 {
-		return world.BiomeSteppe, world.SoilSand
-	}
-	if moisture < 0.54 && temperature > 0.3 {
-		return world.BiomeSteppe, world.SoilGrass
-	}
-	if moisture > 0.6 && temperature < 0.68 {
-		return world.BiomeMarsh, world.SoilMarsh
-	}
-	return world.BiomeTemperateForest, world.SoilGrass
+func effectiveTemperature(rawTemperature, height float64, config Config) float64 {
+	elevation := clamp((height-config.LandThreshold)/(1-config.LandThreshold), 0, 1)
+	return clamp(rawTemperature-elevation*0.32, 0, 1)
 }
 
-func createForest(x, y int, moisture float64, biome world.Biome, forestNoise *valueNoise, config Config) (world.CoverKind, float64, bool) {
+func chooseBiome(height, moisture, temperature float64, config Config) (world.Biome, world.Soil) {
+	if height >= forcedMountainHeight {
+		return world.BiomeMountain, world.SoilRocky
+	}
+	if height >= highlandHeight {
+		if temperature < 0.38 || moisture > 0.58 {
+			return world.BiomeTaiga, world.SoilRocky
+		}
+		return world.BiomeMeadow, world.SoilRocky
+	}
+	if height >= config.MountainHeight && temperature < 0.45 {
+		return world.BiomeTaiga, world.SoilRocky
+	}
+	if height <= marshMaxHeight && moisture > 0.68 && temperature < 0.72 {
+		return world.BiomeMarsh, world.SoilMarsh
+	}
+	if height <= desertMaxHeight && moisture < 0.26 && temperature > 0.62 {
+		return world.BiomeDesert, world.SoilSand
+	}
+	if temperature < 0.34 && moisture > 0.36 {
+		return world.BiomeTaiga, world.SoilGrass
+	}
+	if moisture < 0.42 {
+		return world.BiomeSteppe, world.SoilGrass
+	}
+	if moisture < 0.58 {
+		return world.BiomeMeadow, world.SoilGrass
+	}
+	if temperature < 0.48 {
+		return world.BiomeTaiga, world.SoilGrass
+	}
+	if moisture > 0.72 {
+		return world.BiomeTemperateForest, world.SoilFertile
+	}
+	return world.BiomeBirchForest, world.SoilGrass
+}
+
+func createForest(x, y int, moisture, temperature float64, biome world.Biome, forestNoise *valueNoise, config Config) (world.CoverKind, float64, bool) {
 	cluster := forestNoise.octaveNoise2D(float64(x)*config.ForestClusterScale, float64(y)*config.ForestClusterScale, 4, 0.62)
 	treeChance := 0.2
 	moistureBias := 0.05
 	switch biome {
+	case world.BiomeTaiga:
+		treeChance = 0.26
+		moistureBias = 0.08
+	case world.BiomeBirchForest:
+		treeChance = 0.28
+		moistureBias = 0.08
+	case world.BiomeTemperateForest:
+		treeChance = 0.24
+		moistureBias = 0.12
+	case world.BiomeMeadow:
+		treeChance = 0.055
+		moistureBias = 0.1
 	case world.BiomeSteppe:
-		treeChance = 0.015
+		treeChance = 0.02
 		moistureBias = -0.25
 	case world.BiomeMarsh:
-		treeChance = 0.12
+		treeChance = 0.08
 		moistureBias = 0.25
+	case world.BiomeDesert, world.BiomeMountain:
+		treeChance = 0.006
+		moistureBias = -0.2
 	}
 	chance := treeChance + moistureBias*(moisture-0.5)
 	threshold := clamp(0.78-clamp(chance, 0.005, 0.45)*1.1, 0.42, 0.82)
@@ -372,16 +424,34 @@ func createForest(x, y int, moisture float64, biome world.Biome, forestNoise *va
 		return world.CoverNone, 0, false
 	}
 	density := clamp((cluster-threshold)/(1-threshold), 0.28, 1)
-	if biome == world.BiomeSteppe {
+	if biome == world.BiomeDesert || biome == world.BiomeSteppe || biome == world.BiomeMountain {
 		return world.CoverDryBush, density, true
 	}
 	if biome == world.BiomeMarsh {
-		return world.CoverMixedForest, density, true
+		if cluster > 0.94 {
+			return world.CoverMixedForest, density * 0.65, true
+		}
+		return world.CoverReeds, density, true
 	}
-	if int(math.Floor(cluster*1000)+float64(x+y))%2 == 0 {
+	if biome == world.BiomeTaiga {
+		return world.CoverPineForest, density, true
+	}
+	if biome == world.BiomeBirchForest {
 		return world.CoverBirchForest, density, true
 	}
-	return world.CoverPineForest, density, true
+	if biome == world.BiomeMeadow {
+		if temperature < 0.42 {
+			return world.CoverPineForest, density * 0.8, true
+		}
+		return world.CoverBirchForest, density * 0.8, true
+	}
+	if cluster > 0.92 {
+		return world.CoverMixedForest, density, true
+	}
+	if temperature < 0.46 {
+		return world.CoverPineForest, density, true
+	}
+	return world.CoverBirchForest, density, true
 }
 
 func addShallowWater(m *Map, config Config, shallowNoise *valueNoise) {
@@ -461,14 +531,20 @@ func addGeology(m *Map, config Config, chunks []world.ChunkCoord) {
 					if hasWaterNeighbor(m, x, y) {
 						beachNoise := geologyNoise.octaveNoise2D(float64(x)*config.RockScale*1.8+71, float64(y)*config.RockScale*1.8+83, 3, 0.55)
 						if beachNoise < config.RockyBeachChance {
-							ch.SetBase(idx, world.PackBase(base.Biome(), world.SoilRocky, base.Elevation(), base.Flags()))
+							ch.SetBase(idx, world.PackBase(world.BiomeCoast, world.SoilRocky, base.Elevation(), base.Flags()))
 							ch.SetCover(idx, world.PackCover(world.CoverNone, 0, coverFlagRock))
 							ch.SetStock(idx, uint16(math.Round(2+beachNoise*8)))
 							continue
 						}
+						if height < config.LandThreshold+0.08 {
+							ch.SetBase(idx, world.PackBase(world.BiomeCoast, world.SoilSand, base.Elevation(), base.Flags()))
+							ch.SetCover(idx, world.PackCover(world.CoverNone, 0, 0))
+							ch.SetStock(idx, 0)
+							continue
+						}
 					}
 					mountainNoise := geologyNoise.octaveNoise2D(float64(x)*config.MountainScale+101, float64(y)*config.MountainScale+109, 4, 0.6)
-					if height > config.MountainHeight && mountainNoise > config.MountainThreshold {
+					if base.Biome() == world.BiomeMountain || height >= forcedMountainHeight || (height > config.MountainHeight && mountainNoise > config.MountainThreshold) {
 						ch.SetBase(idx, world.PackBase(world.BiomeMountain, world.SoilRocky, base.Elevation(), base.Flags()))
 						ch.SetCover(idx, world.PackCover(world.CoverNone, 0, coverFlagMountain))
 						ch.SetStock(idx, uint16(math.Round(18+(height-config.MountainHeight)*90)))
@@ -748,31 +824,41 @@ func paintRiverPath(m *Map, path [][2]int, config Config, riverNoise *valueNoise
 		}
 		widthNoise := riverNoise.octaveNoise2D(float64(cell[0])*config.RiverMeanderScale*0.75+float64(riverIndex)*41, float64(cell[1])*config.RiverMeanderScale*0.75+float64(riverIndex)*43, 2, 0.5) - 0.5
 		width := clamp(float64(config.RiverMinWidth)+flow*float64(maxWidth-config.RiverMinWidth)+widthNoise*1.15, float64(config.RiverMinWidth), float64(maxWidth))
-		paintRiverChannel(m, cell, width)
+		paintRiverChannel(m, cell, width, flow)
 	}
 }
 
-func paintRiverChannel(m *Map, center [2]int, width float64) {
+func paintRiverChannel(m *Map, center [2]int, width, flow float64) {
 	radius := max(0, int(math.Ceil(width/2))-1)
 	for y := center[1] - radius; y <= center[1]+radius; y++ {
 		for x := center[0] - radius; x <= center[0]+radius; x++ {
 			if x < 0 || y < 0 || x >= m.Width || y >= m.Height || isWater(m, x, y) {
 				continue
 			}
-			if math.Hypot(float64(x-center[0]), float64(y-center[1])) <= width/2 {
-				markRiverCell(m, x, y, width)
+			distance := math.Hypot(float64(x-center[0]), float64(y-center[1]))
+			if distance <= width/2 {
+				markRiverCell(m, x, y, riverDepth(width, flow, distance))
 			}
 		}
 	}
-	markRiverCell(m, center[0], center[1], width)
+	markRiverCell(m, center[0], center[1], riverDepth(width, flow, 0))
 }
 
-func markRiverCell(m *Map, x, y int, width float64) {
+func riverDepth(width, flow, distanceFromCenter float64) uint8 {
+	if width <= 1 {
+		return uint8(clamp(math.Round(1+flow*2), 1, 7))
+	}
+	halfWidth := math.Max(width/2, 0.5)
+	centerBias := clamp(1-distanceFromCenter/halfWidth, 0, 1)
+	depth := 1 + centerBias*4 + flow*2
+	return uint8(clamp(math.Round(depth), 1, 7))
+}
+
+func markRiverCell(m *Map, x, y int, depth uint8) {
 	ch, idx := chunkCell(m, x, y)
 	base := ch.BaseCell(idx)
-	level := uint8(clamp(math.Round(width), 1, 7))
 	ch.SetBase(idx, world.PackBase(world.BiomeRiverValley, world.SoilSilt, base.Elevation(), base.Flags()))
-	ch.SetWater(idx, world.PackWater(world.WaterRiver, level, false))
+	ch.SetWater(idx, world.PackWater(world.WaterRiver, depth, false))
 	ch.SetCover(idx, world.PackCover(world.CoverNone, 0, 0))
 	ch.SetStock(idx, 0)
 }
@@ -784,6 +870,11 @@ func setCell(m *Map, x, y int, base world.BaseCell, water world.WaterCell, cover
 	ch.SetCover(idx, cover)
 	ch.SetStock(idx, stock)
 	ch.Meta[idx] = uint8(clamp(math.Round(m.heightAt(x, y)*255), 0, 255))
+}
+
+func setTemperature(m *Map, x, y int, temperature float64) {
+	ch, idx := chunkCell(m, x, y)
+	ch.Temperature[idx] = uint8(clamp(math.Round(temperature*255), 0, 255))
 }
 
 func classifyWaterBodies(m *Map, config Config) {

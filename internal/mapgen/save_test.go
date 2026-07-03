@@ -38,6 +38,16 @@ func TestSaveLoadBinaryRoundTrip(t *testing.T) {
 	if loaded.Stats.Land != generated.Stats.Land || loaded.Stats.Water != generated.Stats.Water {
 		t.Fatalf("stats mismatch: got %+v, want %+v", loaded.Stats, generated.Stats)
 	}
+	for coord, generatedChunk := range generated.Chunks {
+		loadedChunk := loaded.Chunks[coord]
+		if loadedChunk == nil {
+			t.Fatalf("missing loaded chunk %v", coord)
+		}
+		if !bytes.Equal(loadedChunk.Temperature, generatedChunk.Temperature) {
+			t.Fatalf("temperature mismatch in chunk %v", coord)
+		}
+		break
+	}
 }
 
 func TestGenerateWorkersIsDeterministic(t *testing.T) {

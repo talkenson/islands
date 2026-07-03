@@ -357,6 +357,7 @@ func copyChunks(chunks map[world.ChunkCoord]*world.Chunk) map[world.ChunkCoord]*
 		copy(next.Cover, ch.Cover)
 		copy(next.Stock, ch.Stock)
 		copy(next.Meta, ch.Meta)
+		copy(next.Temperature, ch.Temperature)
 		copied[coord] = next
 	}
 	return copied

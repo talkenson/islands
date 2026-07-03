@@ -60,6 +60,7 @@ export interface ChunkSnapshotWire {
   cover?: number[];
   stock?: number[];
   meta?: number[] | string;
+  temperature?: number[] | string;
   updated_tick?: number;
 }
 
@@ -71,6 +72,7 @@ export interface ChunkSnapshot {
   cover: number[];
   stock: number[];
   meta: Uint8Array;
+  temperature: Uint8Array;
   updatedTick: number;
 }
 

@@ -5,12 +5,15 @@ import type { ChunkSnapshot, WorldCell } from "./types";
 const BIOMES: Record<number, string> = {
   0: "unknown",
   1: "taiga",
-  2: "temperate forest",
-  3: "river valley",
-  4: "coast",
-  5: "marsh",
-  6: "steppe",
-  7: "mountain",
+  2: "birch forest",
+  3: "temperate forest",
+  4: "river valley",
+  5: "coast",
+  6: "marsh",
+  7: "steppe",
+  8: "mountain",
+  9: "desert",
+  10: "meadow",
 };
 
 const SOILS: Record<number, string> = {
@@ -65,6 +68,7 @@ export interface CellMeta {
   coverFlags: number;
   stock: number;
   height: number;
+  temperature: number;
   updatedTick: number;
 }
 
@@ -108,6 +112,8 @@ export function readCellMeta(
     coverFlags: (cover >> 12) & 15,
     stock: chunk.stock[index] || 0,
     height: chunk.meta.length > index ? chunk.meta[index] || 0 : elevation,
+    temperature:
+      chunk.temperature.length > index ? chunk.temperature[index] || 0 : 0,
     updatedTick: chunk.updatedTick,
   };
 }
