@@ -110,6 +110,7 @@ export function App() {
 
     onCleanup(() => {
       streamAbort?.abort();
+      renderer?.destroy();
       window.removeEventListener("resize", resize);
       window.removeEventListener("keydown", keydown);
     });

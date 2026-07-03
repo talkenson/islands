@@ -1,3 +1,11 @@
+import {
+  Application,
+  CanvasSource,
+  Container,
+  Graphics,
+  Sprite,
+  Texture,
+} from "pixi.js";
 import { CHUNK_SIZE, DEFAULT_RENDER_CONFIG, TILE_SIZE } from "./config";
 import type { ColorNoise } from "./noise";
 import { ValueNoise } from "./noise";
@@ -28,40 +36,80 @@ const FOG_CLEAR_TILES = CHUNK_SIZE * 0.8;
 const FOG_FULL_TILES = CHUNK_SIZE * 1.75;
 const FOG_MAX_ALPHA = 1;
 const FOG_RGB = [7, 11, 13] as const;
-const FOG_MASK_SCALE = 0.4;
-const FOG_SHAPE_POWER = 4;
+const FOG_MASK_BASE_SCALE = 0.18;
+const FOG_MASK_MAX_WIDTH = 320;
+const FOG_MASK_MAX_HEIGHT = 240;
+const FOG_LOADED_CHUNK_MULTIPLIER = 0.8;
+const FOG_LOADED_EDGE_FEATHER_TILES = 8;
+type ChunkLookup = Map<number, Set<number>>;
+
+interface ChunkView {
+  sprite: Sprite;
+  texture: Texture;
+  source: ChunkSnapshot;
+  renderRevision: number;
+}
+
+interface PendingFrame {
+  actor: Actor;
+  chunks: Map<string, ChunkSnapshot>;
+}
 
 export class MapRenderer {
-  private readonly ctx: CanvasRenderingContext2D;
   private readonly fogCanvas: HTMLCanvasElement;
   private readonly fogCtx: CanvasRenderingContext2D;
+  private fogTexture: Texture;
+  private readonly fogSprite: Sprite;
+  private readonly worldLayer = new Container();
+  private readonly chunkLayer = new Container();
+  private readonly gridLayer = new Graphics({ roundPixels: true });
+  private readonly actorLayer = new Graphics({ roundPixels: true });
+  private readonly chunkViews = new Map<string, ChunkView>();
+  private app: Application | undefined;
+  private initialized = false;
+  private destroyed = false;
+  private pendingFrame: PendingFrame | undefined;
+  private fogImage: ImageData | undefined;
   private renderConfig = DEFAULT_RENDER_CONFIG;
   private colorNoise: ColorNoise = new ValueNoise(DEFAULT_RENDER_CONFIG.seed);
+  private textureRevision = 0;
   private viewport: Viewport = { scale: 1, ox: 0, oy: 0, zoom: 2 };
 
   constructor(private readonly canvas: HTMLCanvasElement) {
-    const context = canvas.getContext("2d");
-    if (!context) {
-      throw new Error("2d canvas context is unavailable");
-    }
-    this.ctx = context;
     this.fogCanvas = document.createElement("canvas");
+    this.fogCanvas.width = 1;
+    this.fogCanvas.height = 1;
     const fogContext = this.fogCanvas.getContext("2d");
     if (!fogContext) {
       throw new Error("2d fog canvas context is unavailable");
     }
     this.fogCtx = fogContext;
+    this.fogTexture = this.textureFromCanvas(this.fogCanvas, "linear");
+    this.fogSprite = new Sprite({ texture: this.fogTexture });
+
+    void this.init();
   }
 
   setRenderConfig(renderConfig: RenderConfig): void {
     this.renderConfig = renderConfig;
     this.colorNoise = new ValueNoise(renderConfig.seed);
+    this.textureRevision += 1;
+    if (this.pendingFrame) {
+      return;
+    }
+    if (this.initialized && this.app) {
+      this.app.render();
+    }
   }
 
   resize(actor: Actor, chunks: Map<string, ChunkSnapshot>): void {
-    const ratio = window.devicePixelRatio || 1;
-    this.canvas.width = Math.max(1, Math.floor(window.innerWidth * ratio));
-    this.canvas.height = Math.max(1, Math.floor(window.innerHeight * ratio));
+    const width = Math.max(1, Math.floor(window.innerWidth));
+    const height = Math.max(1, Math.floor(window.innerHeight));
+    if (!this.initialized || !this.app) {
+      this.pendingFrame = { actor, chunks };
+      return;
+    }
+    this.app.renderer.resize(width, height);
     this.draw(actor, chunks);
   }
 
@@ -93,8 +141,8 @@ export class MapRenderer {
       return undefined;
     }
 
-    const px = (clientX - rect.left) * (this.canvas.width / rect.width);
-    const py = (clientY - rect.top) * (this.canvas.height / rect.height);
+    const px = clientX - rect.left;
+    const py = clientY - rect.top;
     return {
       x: Math.floor((px - this.viewport.ox) / this.viewport.scale),
       y: Math.floor((py - this.viewport.oy) / this.viewport.scale),
@@ -102,12 +150,14 @@ export class MapRenderer {
   }
 
   draw(actor: Actor, chunks: Map<string, ChunkSnapshot>): void {
-    const width = this.canvas.width;
-    const height = this.canvas.height;
-    this.ctx.clearRect(0, 0, width, height);
+    if (!this.initialized || !this.app) {
+      this.pendingFrame = { actor, chunks };
+      return;
+    }
 
-    const ratio = window.devicePixelRatio || 1;
-    const tile = TILE_SIZE * this.viewport.zoom * ratio;
+    const width = this.app.screen.width;
+    const height = this.app.screen.height;
+    const tile = TILE_SIZE * this.viewport.zoom;
     const centerX = width / 2 - (actor.x + 0.5) * tile;
     const centerY = height / 2 - (actor.y + 0.5) * tile;
     this.viewport = {
@@ -117,81 +167,265 @@ export class MapRenderer {
       zoom: this.viewport.zoom,
     };
 
-    this.ctx.fillStyle = "#0a1115";
-    this.ctx.fillRect(0, 0, width, height);
+    this.updateChunkSprites(chunks);
+    this.worldLayer.position.set(centerX, centerY);
+    this.worldLayer.scale.set(tile);
 
-    for (const chunk of chunks.values()) {
-      this.drawChunk(chunk, chunks, tile, centerX, centerY);
-    }
-
-    this.drawGrid(tile, centerX, centerY);
-    this.drawFogOverlay(actor, tile, centerX, centerY);
+    this.drawGrid(tile, centerX, centerY, width, height);
+    this.drawFogOverlay(actor, chunks, tile, centerX, centerY, width, height);
     this.drawActor(actor, tile, centerX, centerY);
+    this.app.render();
   }
 
-  private drawChunk(
+  destroy(): void {
+    this.destroyed = true;
+    this.chunkViews.forEach((view) => {
+      view.texture.destroy(true);
+      view.sprite.destroy();
+    });
+    this.chunkViews.clear();
+    this.fogTexture.destroy(true);
+    this.app?.destroy(false, {
+      children: true,
+      texture: false,
+      textureSource: false,
+    });
+    this.app = undefined;
+  }
+
+  private async init(): Promise<void> {
+    const app = new Application();
+    this.app = app;
+    await app.init({
+      canvas: this.canvas,
+      width: Math.max(1, Math.floor(window.innerWidth)),
+      height: Math.max(1, Math.floor(window.innerHeight)),
+      resolution: window.devicePixelRatio || 1,
+      autoDensity: true,
+      backgroundColor: 0x0a1115,
+      preference: ["webgl", "canvas"],
+      antialias: false,
+      autoStart: false,
+      roundPixels: true,
+    });
+    if (this.destroyed) {
+      app.destroy(false);
+      return;
+    }
+
+    app.stage.addChild(this.worldLayer);
+    this.worldLayer.addChild(this.chunkLayer);
+    app.stage.addChild(this.gridLayer);
+    app.stage.addChild(this.fogSprite);
+    app.stage.addChild(this.actorLayer);
+    this.initialized = true;
+
+    if (this.pendingFrame) {
+      const frame = this.pendingFrame;
+      this.pendingFrame = undefined;
+      this.draw(frame.actor, frame.chunks);
+    } else {
+      app.render();
+    }
+  }
+
+  private updateChunkSprites(chunks: Map<string, ChunkSnapshot>): void {
+    const dirty = new Set<string>();
+
+    for (const [key, chunk] of chunks) {
+      const view = this.chunkViews.get(key);
+      if (
+        !view ||
+        view.source !== chunk ||
+        view.renderRevision !== this.textureRevision
+      ) {
+        addDirtyChunkAndNeighbors(dirty, chunk.cx, chunk.cy);
+      }
+    }
+
+    for (const key of this.chunkViews.keys()) {
+      if (!chunks.has(key)) {
+        const view = this.chunkViews.get(key);
+        if (view) {
+          this.chunkLayer.removeChild(view.sprite);
+          view.texture.destroy(true);
+          view.sprite.destroy();
+          this.chunkViews.delete(key);
+        }
+      }
+    }
+
+    for (const key of dirty) {
+      const chunk = chunks.get(key);
+      if (!chunk) {
+        continue;
+      }
+      this.upsertChunkSprite(key, chunk, chunks);
+    }
+  }
+
+  private upsertChunkSprite(
+    key: string,
     chunk: ChunkSnapshot,
     chunks: Map<string, ChunkSnapshot>,
-    tile: number,
-    ox: number,
-    oy: number,
   ): void {
+    const texture = this.buildChunkTexture(chunk, chunks);
+    const view = this.chunkViews.get(key);
+    if (!view) {
+      const sprite = new Sprite({ texture, roundPixels: true });
+      sprite.position.set(chunk.cx * CHUNK_SIZE, chunk.cy * CHUNK_SIZE);
+      this.chunkLayer.addChild(sprite);
+      this.chunkViews.set(key, {
+        sprite,
+        texture,
+        source: chunk,
+        renderRevision: this.textureRevision,
+      });
+      return;
+    }
+
+    const oldTexture = view.texture;
+    view.sprite.texture = texture;
+    view.sprite.position.set(chunk.cx * CHUNK_SIZE, chunk.cy * CHUNK_SIZE);
+    view.texture = texture;
+    view.source = chunk;
+    view.renderRevision = this.textureRevision;
+    oldTexture.destroy(true);
+  }
+
+  private buildChunkTexture(
+    chunk: ChunkSnapshot,
+    chunks: Map<string, ChunkSnapshot>,
+  ): Texture {
+    const canvas = document.createElement("canvas");
+    canvas.width = CHUNK_SIZE;
+    canvas.height = CHUNK_SIZE;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      throw new Error("2d chunk canvas context is unavailable");
+    }
+    context.imageSmoothingEnabled = false;
     for (let i = 0; i < CHUNK_SIZE * CHUNK_SIZE; i++) {
       const lx = i % CHUNK_SIZE;
       const ly = Math.floor(i / CHUNK_SIZE);
       const wx = chunk.cx * CHUNK_SIZE + lx;
       const wy = chunk.cy * CHUNK_SIZE + ly;
-      const x = Math.floor(ox + wx * tile);
-      const y = Math.floor(oy + wy * tile);
-      if (
-        x + tile < 0 ||
-        y + tile < 0 ||
-        x > this.canvas.width ||
-        y > this.canvas.height
-      ) {
-        continue;
-      }
-      this.ctx.fillStyle = this.cellColor(chunk, chunks, i, wx, wy);
-      this.ctx.fillRect(x, y, Math.ceil(tile), Math.ceil(tile));
+      context.fillStyle = this.cellColor(chunk, chunks, i, wx, wy);
+      context.fillRect(lx, ly, 1, 1);
     }
+    return this.textureFromCanvas(canvas, "nearest");
   }
 
-  private drawFogOverlay(actor: Actor, tile: number, ox: number, oy: number): void {
-    const width = Math.max(1, Math.ceil(this.canvas.width * FOG_MASK_SCALE));
-    const height = Math.max(1, Math.ceil(this.canvas.height * FOG_MASK_SCALE));
+  private textureFromCanvas(
+    canvas: HTMLCanvasElement,
+    scaleMode: "nearest" | "linear",
+  ): Texture {
+    const source = new CanvasSource({
+      resource: canvas,
+      scaleMode,
+      autoGenerateMipmaps: false,
+    });
+    return new Texture({ source });
+  }
+
+  private drawFogOverlay(
+    actor: Actor,
+    chunks: Map<string, ChunkSnapshot>,
+    tile: number,
+    ox: number,
+    oy: number,
+    screenWidth: number,
+    screenHeight: number,
+  ): void {
+    const scale = Math.min(
+      FOG_MASK_BASE_SCALE,
+      FOG_MASK_MAX_WIDTH / screenWidth,
+      FOG_MASK_MAX_HEIGHT / screenHeight,
+    );
+    const width = Math.max(1, Math.ceil(screenWidth * scale));
+    const height = Math.max(1, Math.ceil(screenHeight * scale));
     if (this.fogCanvas.width !== width || this.fogCanvas.height !== height) {
       this.fogCanvas.width = width;
       this.fogCanvas.height = height;
+      this.fogImage = undefined;
+      this.replaceFogTexture();
     }
 
-    const image = this.fogCtx.createImageData(width, height);
+    const image =
+      this.fogImage &&
+      this.fogImage.width === width &&
+      this.fogImage.height === height
+        ? this.fogImage
+        : this.fogCtx.createImageData(width, height);
+    this.fogImage = image;
     const actorX = actor.x + 0.5;
     const actorY = actor.y + 0.5;
+    const data = image.data;
+    const chunkLookup = buildChunkLookup(chunks);
 
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
-        const screenX = (x + 0.5) / FOG_MASK_SCALE;
-        const screenY = (y + 0.5) / FOG_MASK_SCALE;
+        const screenX = (x + 0.5) / scale;
+        const screenY = (y + 0.5) / scale;
         const wx = (screenX - ox) / tile;
         const wy = (screenY - oy) / tile;
-        const alpha = this.fogAlpha(wx - actorX, wy - actorY);
+        const alpha =
+          this.fogAlpha(wx - actorX, wy - actorY) *
+          this.loadedChunkFogMultiplier(chunkLookup, wx, wy);
         const offset = (y * width + x) * 4;
-        image.data[offset] = FOG_RGB[0];
-        image.data[offset + 1] = FOG_RGB[1];
-        image.data[offset + 2] = FOG_RGB[2];
-        image.data[offset + 3] = Math.round(alpha * 255);
+        data[offset] = FOG_RGB[0];
+        data[offset + 1] = FOG_RGB[1];
+        data[offset + 2] = FOG_RGB[2];
+        data[offset + 3] = Math.round(alpha * 255);
       }
     }
     this.fogCtx.putImageData(image, 0, 0);
+    this.fogTexture.source.update();
+    this.fogSprite.position.set(0, 0);
+    this.fogSprite.width = screenWidth;
+    this.fogSprite.height = screenHeight;
+  }
 
-    const previousSmoothing = this.ctx.imageSmoothingEnabled;
-    this.ctx.imageSmoothingEnabled = true;
-    this.ctx.drawImage(this.fogCanvas, 0, 0, this.canvas.width, this.canvas.height);
-    this.ctx.imageSmoothingEnabled = previousSmoothing;
+  private replaceFogTexture(): void {
+    const oldTexture = this.fogTexture;
+    this.fogTexture = this.textureFromCanvas(this.fogCanvas, "linear");
+    this.fogSprite.texture = this.fogTexture;
+    oldTexture.destroy(true);
+  }
+
+  private loadedChunkFogMultiplier(
+    chunks: ChunkLookup,
+    wx: number,
+    wy: number,
+  ): number {
+    const cx = Math.floor(wx / CHUNK_SIZE);
+    const cy = Math.floor(wy / CHUNK_SIZE);
+    if (!hasChunk(chunks, cx, cy)) {
+      return 1;
+    }
+
+    const lx = wx - cx * CHUNK_SIZE;
+    const ly = wy - cy * CHUNK_SIZE;
+    let edgeDistance = FOG_LOADED_EDGE_FEATHER_TILES;
+    if (!hasChunk(chunks, cx - 1, cy)) {
+      edgeDistance = Math.min(edgeDistance, lx);
+    }
+    if (!hasChunk(chunks, cx + 1, cy)) {
+      edgeDistance = Math.min(edgeDistance, CHUNK_SIZE - lx);
+    }
+    if (!hasChunk(chunks, cx, cy - 1)) {
+      edgeDistance = Math.min(edgeDistance, ly);
+    }
+    if (!hasChunk(chunks, cx, cy + 1)) {
+      edgeDistance = Math.min(edgeDistance, CHUNK_SIZE - ly);
+    }
+
+    const t = smoothstep(edgeDistance / FOG_LOADED_EDGE_FEATHER_TILES);
+    return lerp(1, FOG_LOADED_CHUNK_MULTIPLIER, t);
   }
 
   private fogAlpha(dx: number, dy: number): number {
-    const distance = superellipseDistance(dx, dy, FOG_SHAPE_POWER);
+    const distance = roundedSquareDistance(dx, dy);
     const t = smoothstep(
       (distance - FOG_CLEAR_TILES) / (FOG_FULL_TILES - FOG_CLEAR_TILES),
     );
@@ -355,42 +589,59 @@ export class MapRenderer {
     return (chunk.water[ly * CHUNK_SIZE + lx] || 0) & 15;
   }
 
-  private drawGrid(tile: number, ox: number, oy: number): void {
+  private drawGrid(
+    tile: number,
+    ox: number,
+    oy: number,
+    screenWidth: number,
+    screenHeight: number,
+  ): void {
+    this.gridLayer.clear();
     if (tile < 7) {
       return;
     }
     const startX = Math.floor(-ox / tile) - 1;
-    const endX = Math.ceil((this.canvas.width - ox) / tile) + 1;
+    const endX = Math.ceil((screenWidth - ox) / tile) + 1;
     const startY = Math.floor(-oy / tile) - 1;
-    const endY = Math.ceil((this.canvas.height - oy) / tile) + 1;
+    const endY = Math.ceil((screenHeight - oy) / tile) + 1;
 
-    this.ctx.strokeStyle = "rgba(0, 0, 0, 0.18)";
-    this.ctx.lineWidth = 1;
-    this.ctx.beginPath();
     for (let x = startX; x <= endX; x++) {
-      const px = Math.floor(ox + x * tile) + 0.5;
-      this.ctx.moveTo(px, 0);
-      this.ctx.lineTo(px, this.canvas.height);
+      const px = Math.floor(ox + x * tile);
+      this.gridLayer.rect(px, 0, 1, screenHeight).fill({
+        color: 0x000000,
+        alpha: 0.18,
+      });
     }
     for (let y = startY; y <= endY; y++) {
-      const py = Math.floor(oy + y * tile) + 0.5;
-      this.ctx.moveTo(0, py);
-      this.ctx.lineTo(this.canvas.width, py);
+      const py = Math.floor(oy + y * tile);
+      this.gridLayer.rect(0, py, screenWidth, 1).fill({
+        color: 0x000000,
+        alpha: 0.18,
+      });
     }
-    this.ctx.stroke();
   }
 
   private drawActor(actor: Actor, tile: number, ox: number, oy: number): void {
-    const x = ox + actor.x * tile;
-    const y = oy + actor.y * tile;
-    this.ctx.fillStyle = "#ffe8a0";
-    this.ctx.strokeStyle = "#18120a";
-    this.ctx.lineWidth = Math.max(2, tile * 0.15);
-    this.ctx.beginPath();
-    this.ctx.arc(x + tile / 2, y + tile / 2, tile * 0.45, 0, Math.PI * 2);
-    this.ctx.fill();
-    this.ctx.stroke();
+    const x = ox + actor.x * tile + tile / 2;
+    const y = oy + actor.y * tile + tile / 2;
+    this.actorLayer
+      .clear()
+      .circle(x, y, tile * 0.45)
+      .fill({ color: 0xffe8a0 })
+      .stroke({ color: 0x18120a, width: Math.max(2, tile * 0.15) });
   }
+}
+
+function addDirtyChunkAndNeighbors(
+  dirty: Set<string>,
+  cx: number,
+  cy: number,
+): void {
+  dirty.add(chunkKey(cx, cy));
+  dirty.add(chunkKey(cx - 1, cy));
+  dirty.add(chunkKey(cx + 1, cy));
+  dirty.add(chunkKey(cx, cy - 1));
+  dirty.add(chunkKey(cx, cy + 1));
 }
 
 function coverDensity(stock: number): number {
@@ -406,16 +657,38 @@ function shade(hex: string, amount: number): string {
   return `rgb(${channels.join(",")})`;
 }
 
-function superellipseDistance(dx: number, dy: number, power: number): number {
-  return Math.pow(
-    Math.pow(Math.abs(dx), power) + Math.pow(Math.abs(dy), power),
-    1 / power,
-  );
+function roundedSquareDistance(dx: number, dy: number): number {
+  const ax = Math.abs(dx);
+  const ay = Math.abs(dy);
+  const ax2 = ax * ax;
+  const ay2 = ay * ay;
+  return Math.sqrt(Math.sqrt(ax2 * ax2 + ay2 * ay2));
+}
+
+function buildChunkLookup(chunks: Map<string, ChunkSnapshot>): ChunkLookup {
+  const lookup: ChunkLookup = new Map();
+  for (const chunk of chunks.values()) {
+    let column = lookup.get(chunk.cx);
+    if (!column) {
+      column = new Set();
+      lookup.set(chunk.cx, column);
+    }
+    column.add(chunk.cy);
+  }
+  return lookup;
+}
+
+function hasChunk(chunks: ChunkLookup, cx: number, cy: number): boolean {
+  return chunks.get(cx)?.has(cy) || false;
 }
 
 function smoothstep(value: number): number {
   const t = clamp(value, 0, 1);
   return t * t * (3 - 2 * t);
+}
+
+function lerp(start: number, end: number, t: number): number {
+  return start + (end - start) * t;
 }
 
 export function clamp(value: number, min: number, max: number): number {
