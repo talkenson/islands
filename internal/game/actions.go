@@ -107,44 +107,70 @@ func (s *Service) ApplyAction(ctx context.Context, worldID, actorID uint64, req 
 			}
 			ch = s.ensureChunkLocked(worldID, coord)
 		}
-		if ch.Stock[index] == 0 {
+		if !canHarvestTree(ch, index) {
 			s.mu.Unlock()
 			return ActionResult{}, ErrConflict
 		}
+		previousCover := ch.Cover[index]
 		previousStock := ch.Stock[index]
 		previousDirty := ch.Dirty
 		previousTick := s.tick
-		previousStack, hadStack := s.stackLocked(act.PocketInventoryID, ItemWood)
-		if !s.addStackLocked(act.PocketInventoryID, ItemWood, 1) {
-			s.mu.Unlock()
-			return ActionResult{}, ErrConflict
+		previousWoodStack, hadWoodStack := s.stackLocked(act.PocketInventoryID, ItemWood)
+		previousSaplingStack, hadSaplingStack := s.stackLocked(act.PocketInventoryID, ItemTreeSapling)
+		cover := ch.CoverCell(index)
+		stage := treeStage(cover)
+		woodYield := treeWoodYield(stage)
+		saplingYield := uint32(0)
+		if stage >= TreeStageMature {
+			saplingYield = treeSaplingYield(worldID, coord, index, s.tick+1)
 		}
-		ch.Stock[index]--
-		ch.Dirty = true
+		if woodYield > 0 {
+			if !s.addStackLocked(act.PocketInventoryID, ItemWood, woodYield) {
+				s.mu.Unlock()
+				return ActionResult{}, ErrConflict
+			}
+		}
+		if saplingYield > 0 {
+			if !s.addStackLocked(act.PocketInventoryID, ItemTreeSapling, saplingYield) {
+				s.restoreStackLocked(act.PocketInventoryID, ItemWood, previousWoodStack, hadWoodStack)
+				s.mu.Unlock()
+				return ActionResult{}, ErrConflict
+			}
+		}
+		ch.SetCover(index, world.PackCover(world.CoverGrass, 1, 0))
+		ch.SetStock(index, 0)
 		s.tick++
 		store := s.store
 		if store != nil {
 			if err := store.SaveDirtyChunk(ctx, ch, s.tick); err != nil {
+				ch.Cover[index] = previousCover
 				ch.Stock[index] = previousStock
 				ch.Dirty = previousDirty
-				s.restoreStackLocked(act.PocketInventoryID, ItemWood, previousStack, hadStack)
+				s.restoreStackLocked(act.PocketInventoryID, ItemWood, previousWoodStack, hadWoodStack)
+				s.restoreStackLocked(act.PocketInventoryID, ItemTreeSapling, previousSaplingStack, hadSaplingStack)
 				s.tick = previousTick
 				s.mu.Unlock()
 				return ActionResult{}, err
 			}
 			if err := store.SavePlayerState(ctx, s.playerStateLocked(), s.tick); err != nil {
+				ch.Cover[index] = previousCover
 				ch.Stock[index] = previousStock
 				ch.Dirty = previousDirty
-				s.restoreStackLocked(act.PocketInventoryID, ItemWood, previousStack, hadStack)
+				s.restoreStackLocked(act.PocketInventoryID, ItemWood, previousWoodStack, hadWoodStack)
+				s.restoreStackLocked(act.PocketInventoryID, ItemTreeSapling, previousSaplingStack, hadSaplingStack)
 				s.tick = previousTick
 				s.mu.Unlock()
 				return ActionResult{}, err
 			}
 		}
 		eventID := s.nextEventIDLocked()
-		inventoryPatchID := s.nextEventIDLocked()
+		var inventoryPatchID uint64
+		var inventoryPatch InventoryPatch
+		if woodYield > 0 || saplingYield > 0 {
+			inventoryPatchID = s.nextEventIDLocked()
+			inventoryPatch = s.inventoryPatchLocked(*act)
+		}
 		snapshot := snapshotChunk(ch, s.tick)
-		inventoryPatch := s.inventoryPatchLocked(*act)
 		result := ActionResult{Accepted: true, ClientActionID: req.ClientActionID, ActionType: req.ActionType, EventID: eventID}
 		patch := EntityPatch{Actor: actorSnapshot(*act)}
 		s.mu.Unlock()
@@ -163,6 +189,76 @@ func (s *Service) ApplyAction(ctx context.Context, worldID, actorID uint64, req 
 			ChangedChunks: []world.ChunkCoord{coord},
 			Data:          snapshot,
 		})
+		if woodYield > 0 || saplingYield > 0 {
+			s.hub.Publish(realtime.Event{
+				ID:            inventoryPatchID,
+				Type:          "inventory_patch",
+				WorldID:       worldID,
+				TargetActorID: actorID,
+				Data:          inventoryPatch,
+			})
+		}
+		return result, nil
+	case "plant_tree":
+		coord, index := world.ToChunkCoord(act.X, act.Y)
+		ch := s.chunkLocked(worldID, coord)
+		if ch == nil {
+			if s.loadedWorlds[worldID] {
+				s.mu.Unlock()
+				return ActionResult{}, ErrNotVisible
+			}
+			ch = s.ensureChunkLocked(worldID, coord)
+		}
+		if !canPlantTree(ch, index) {
+			s.mu.Unlock()
+			return ActionResult{}, ErrConflict
+		}
+		previousCover := ch.Cover[index]
+		previousStock := ch.Stock[index]
+		previousDirty := ch.Dirty
+		previousTick := s.tick
+		previousSaplingStack, hadSaplingStack := s.stackLocked(act.PocketInventoryID, ItemTreeSapling)
+		if !s.removeStackLocked(act.PocketInventoryID, ItemTreeSapling, 1) {
+			s.mu.Unlock()
+			return ActionResult{}, ErrConflict
+		}
+		ch.SetCover(index, world.PackCover(seedlingKind(ch.BaseCell(index).Biome(), world.CoverBirchForest), TreeStageSapling, 0))
+		ch.SetStock(index, 0)
+		s.tick++
+		store := s.store
+		if store != nil {
+			if err := store.SaveDirtyChunk(ctx, ch, s.tick); err != nil {
+				ch.Cover[index] = previousCover
+				ch.Stock[index] = previousStock
+				ch.Dirty = previousDirty
+				s.restoreStackLocked(act.PocketInventoryID, ItemTreeSapling, previousSaplingStack, hadSaplingStack)
+				s.tick = previousTick
+				s.mu.Unlock()
+				return ActionResult{}, err
+			}
+			if err := store.SavePlayerState(ctx, s.playerStateLocked(), s.tick); err != nil {
+				ch.Cover[index] = previousCover
+				ch.Stock[index] = previousStock
+				ch.Dirty = previousDirty
+				s.restoreStackLocked(act.PocketInventoryID, ItemTreeSapling, previousSaplingStack, hadSaplingStack)
+				s.tick = previousTick
+				s.mu.Unlock()
+				return ActionResult{}, err
+			}
+		}
+		eventID := s.nextEventIDLocked()
+		inventoryPatchID := s.nextEventIDLocked()
+		snapshot := snapshotChunk(ch, s.tick)
+		inventoryPatch := s.inventoryPatchLocked(*act)
+		result := ActionResult{Accepted: true, ClientActionID: req.ClientActionID, ActionType: req.ActionType, EventID: eventID}
+		s.mu.Unlock()
+		s.hub.Publish(realtime.Event{
+			ID:            eventID,
+			Type:          "chunk_snapshot",
+			WorldID:       worldID,
+			ChangedChunks: []world.ChunkCoord{coord},
+			Data:          snapshot,
+		})
 		s.hub.Publish(realtime.Event{
 			ID:            inventoryPatchID,
 			Type:          "inventory_patch",
@@ -175,6 +271,11 @@ func (s *Service) ApplyAction(ctx context.Context, worldID, actorID uint64, req 
 		s.mu.Unlock()
 		return ActionResult{}, ErrInvalidAction
 	}
+}
+
+func canHarvestTree(ch *world.Chunk, index uint16) bool {
+	cover := ch.CoverCell(index)
+	return isTreeCover(cover.Kind())
 }
 
 func validMove(act actor.Actor, x, y int32) bool {

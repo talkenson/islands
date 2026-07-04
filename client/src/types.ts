@@ -1,5 +1,5 @@
 export type StatusKind = "idle" | "live" | "error";
-export type ActionType = "move" | "harvest";
+export type ActionType = "move" | "harvest" | "plant_tree";
 export type PanelID = "actor" | "cell" | "controls" | "events";
 
 export interface LogEvent {

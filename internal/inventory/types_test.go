@@ -65,3 +65,26 @@ func TestStackSetRestoreRemovesNewStack(t *testing.T) {
 		t.Fatalf("items: got %+v", items)
 	}
 }
+
+func TestStackSetRemoveConsumesAndDeletesEmptyStack(t *testing.T) {
+	set := NewStackSet()
+	if !set.Add(Stack{InventoryID: 1, ItemID: 1, Amount: 2}, 0) {
+		t.Fatalf("add stack")
+	}
+	if !set.Remove(1, 1) {
+		t.Fatalf("remove first item")
+	}
+	stack, ok := set.Get(1)
+	if !ok || stack.Amount != 1 {
+		t.Fatalf("stack after first remove: got %+v ok=%v", stack, ok)
+	}
+	if !set.Remove(1, 1) {
+		t.Fatalf("remove second item")
+	}
+	if set.Len() != 0 {
+		t.Fatalf("empty stack should be deleted")
+	}
+	if set.Remove(1, 1) {
+		t.Fatalf("remove missing item should fail")
+	}
+}

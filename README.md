@@ -83,6 +83,19 @@ GOCACHE=/home/talk/work/islands/.gocache go run ./cmd/islands \
   -compact-world-interval 15m
 ```
 
+The server also reads `server.conf` from the working directory, Minecraft-style. CLI flags with the same names override config values. Use `-config path/to/server.conf` or `-c path/to/server.conf` to choose another file.
+
+Forest growth is tied to in-game days, not a raw real-time interval:
+
+```properties
+world-day-length=8m
+world-time-tick-interval=1s
+world-seconds-per-tick=1
+forest-growth-per-day=2
+```
+
+With those defaults, the forest simulation runs twice per in-game day, roughly every 4 real minutes. Use `forest-growth-per-day=1` for once per day or `0` to disable automatic forest growth.
+
 The default `-visible-chunk-radius 2` gives the client a `5x5` live chunk window, with the outer ring rendered under fog. Use `-visible-chunk-radius 1` for the smaller `3x3` window. If `-world-map` is omitted, the server starts with a small in-memory demo world.
 `world.islmap` stores the generator seed used by the frontend render palette/noise.
 

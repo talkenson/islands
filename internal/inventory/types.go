@@ -87,6 +87,31 @@ func (s *StackSet) Add(stack Stack, slotLimit int) bool {
 	return true
 }
 
+func (s *StackSet) Remove(itemID ItemID, amount uint32) bool {
+	if amount == 0 {
+		return true
+	}
+	if s == nil || s.byItem == nil {
+		return false
+	}
+	existing := s.byItem[itemID]
+	if existing == nil || existing.Amount < amount {
+		return false
+	}
+	existing.Amount -= amount
+	if existing.Amount > 0 {
+		return true
+	}
+	delete(s.byItem, itemID)
+	for i, orderedID := range s.order {
+		if orderedID == itemID {
+			s.order = append(s.order[:i], s.order[i+1:]...)
+			break
+		}
+	}
+	return true
+}
+
 func (s *StackSet) Restore(itemID ItemID, previous Stack, hadStack bool) {
 	if s.byItem == nil {
 		s.byItem = make(map[ItemID]*Stack)

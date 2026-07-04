@@ -262,12 +262,12 @@ func TestHarvestPublishesInventoryPatchToActor(t *testing.T) {
 	defer hub.Unsubscribe(other.ID)
 
 	if _, err := service.ApplyAction(context.Background(), 1, 1, ActionRequest{ActionType: "harvest"}); err != nil {
-		t.Fatal(err)
+		t.Fatalf("harvest: %v", err)
 	}
 
 	var patch InventoryPatch
 	found := false
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 7; i++ {
 		select {
 		case event := <-owner.Events:
 			if event.Type != "inventory_patch" {
@@ -291,7 +291,7 @@ func TestHarvestPublishesInventoryPatchToActor(t *testing.T) {
 	if !found {
 		t.Fatalf("owner did not receive inventory_patch")
 	}
-	if len(patch.Inventory) != 1 || patch.Inventory[0].ItemID != ItemWood || patch.Inventory[0].Amount != 1 {
+	if stackAmount(patch.Inventory, ItemWood) != treeWoodYield(TreeStageMature) {
 		t.Fatalf("inventory patch: got %+v", patch.Inventory)
 	}
 
@@ -391,6 +391,7 @@ func TestHarvestWithFullPocketDoesNotConsumeStock(t *testing.T) {
 	coord, index := world.ToChunkCoord(act.X, act.Y)
 	ch := service.chunkLocked(1, coord)
 	previousStock := ch.Stock[index]
+	previousCover := ch.Cover[index]
 	service.mu.Unlock()
 
 	if _, err := service.ApplyAction(context.Background(), 1, uint64(act.ID), ActionRequest{ActionType: "harvest"}); !errors.Is(err, ErrConflict) {
@@ -402,9 +403,119 @@ func TestHarvestWithFullPocketDoesNotConsumeStock(t *testing.T) {
 	if ch.Stock[index] != previousStock {
 		t.Fatalf("stock: got %d, want %d", ch.Stock[index], previousStock)
 	}
+	if ch.Cover[index] != previousCover {
+		t.Fatalf("cover changed: got %d, want %d", ch.Cover[index], previousCover)
+	}
 	if len(service.inventorySnapshotLocked(act)) != PocketSlotLimit {
 		t.Fatalf("inventory changed: got %+v", service.inventorySnapshotLocked(act))
 	}
+}
+
+func TestPlantTreeCreatesSapling(t *testing.T) {
+	service := NewService(nil, realtime.Config{VisibleChunkRadius: 1})
+	act := service.SeedDemoActor(1)
+	coord, index := world.ToChunkCoord(act.X, act.Y)
+	ch := world.NewChunk(coord.X, coord.Y)
+	ch.Base[index] = uint16(world.PackBase(world.BiomeMeadow, world.SoilGrass, 8, 0))
+	ch.Cover[index] = uint16(world.PackCover(world.CoverGrass, 1, 0))
+	if err := service.LoadChunks(1, map[world.ChunkCoord]*world.Chunk{coord: ch}); err != nil {
+		t.Fatal(err)
+	}
+	service.mu.Lock()
+	if !service.addStackLocked(act.PocketInventoryID, ItemTreeSapling, 1) {
+		t.Fatalf("add tree sapling")
+	}
+	service.mu.Unlock()
+
+	if _, err := service.ApplyAction(context.Background(), 1, uint64(act.ID), ActionRequest{ActionType: "plant_tree"}); err != nil {
+		t.Fatalf("plant tree: %v", err)
+	}
+
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	cover := service.chunkLocked(1, coord).CoverCell(index)
+	if cover.Kind() != world.CoverBirchForest || treeStage(cover) != TreeStageSapling {
+		t.Fatalf("cover after plant: got kind=%d stage=%d", cover.Kind(), treeStage(cover))
+	}
+	if got := stackAmount(service.inventorySnapshotLocked(act), ItemTreeSapling); got != 0 {
+		t.Fatalf("saplings after plant: got %d, want 0", got)
+	}
+}
+
+func TestHarvestTreeStageYields(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		stage uint8
+		wood  uint32
+	}{
+		{name: "sapling", stage: TreeStageSapling, wood: 0},
+		{name: "young", stage: TreeStageYoung, wood: 1},
+		{name: "mature", stage: TreeStageMature, wood: 7},
+		{name: "old", stage: TreeStageOld, wood: 11},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			service := NewService(nil, realtime.Config{VisibleChunkRadius: 1})
+			act := service.SeedDemoActor(1)
+			coord, index := world.ToChunkCoord(act.X, act.Y)
+			ch := world.NewChunk(coord.X, coord.Y)
+			ch.Base[index] = uint16(world.PackBase(world.BiomeBirchForest, world.SoilGrass, 8, 0))
+			ch.Cover[index] = uint16(world.PackCover(world.CoverBirchForest, tt.stage, 0))
+			ch.Stock[index] = uint16(treeWoodYield(tt.stage))
+			if err := service.LoadChunks(1, map[world.ChunkCoord]*world.Chunk{coord: ch}); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := service.ApplyAction(context.Background(), 1, uint64(act.ID), ActionRequest{ActionType: "harvest"}); err != nil {
+				t.Fatalf("harvest: %v", err)
+			}
+
+			service.mu.Lock()
+			defer service.mu.Unlock()
+			if got := service.chunkLocked(1, coord).Stock[index]; got != 0 {
+				t.Fatalf("stock after fell: got %d, want 0", got)
+			}
+			if got := service.chunkLocked(1, coord).CoverCell(index).Kind(); got != world.CoverGrass {
+				t.Fatalf("cover after fell: got %d, want grass", got)
+			}
+			inventory := service.inventorySnapshotLocked(act)
+			if stackAmount(inventory, ItemWood) != tt.wood {
+				t.Fatalf("wood after fell: got inventory %+v, want %d wood", inventory, tt.wood)
+			}
+			saplings := stackAmount(inventory, ItemTreeSapling)
+			if tt.stage < TreeStageMature && saplings != 0 {
+				t.Fatalf("saplings after young/sapling fell: got %d, want 0", saplings)
+			}
+			if saplings > 3 {
+				t.Fatalf("saplings after mature/old fell: got %d, want <= 3", saplings)
+			}
+		})
+	}
+}
+
+func TestForestGrowthAdvancesActiveSapling(t *testing.T) {
+	service := NewService(nil, realtime.Config{VisibleChunkRadius: 0})
+	act := service.SeedDemoActor(1)
+	coord, index := world.ToChunkCoord(act.X, act.Y)
+	ch := world.NewChunk(coord.X, coord.Y)
+	ch.Base[index] = uint16(world.PackBase(world.BiomeBirchForest, world.SoilGrass, 8, 0))
+	ch.Cover[index] = uint16(world.PackCover(world.CoverBirchForest, TreeStageSapling, 0))
+	if err := service.LoadChunks(1, map[world.ChunkCoord]*world.Chunk{coord: ch}); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 256; i++ {
+		if _, err := service.AdvanceForestGrowth(context.Background(), 1); err != nil {
+			t.Fatalf("growth tick %d: %v", i, err)
+		}
+		service.mu.Lock()
+		stage := treeStage(service.chunkLocked(1, coord).CoverCell(index))
+		stock := service.chunkLocked(1, coord).Stock[index]
+		service.mu.Unlock()
+		if stage >= TreeStageYoung && stock == uint16(treeWoodYield(TreeStageYoung)) {
+			return
+		}
+	}
+	t.Fatalf("sapling did not advance after growth ticks")
 }
 
 func TestAdvanceWorldTimePublishesOnPhaseChange(t *testing.T) {
@@ -469,10 +580,13 @@ func TestHarvestPersistsThroughFileStoreRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload world: %v", err)
 	}
-	if got := loaded.Chunks[coord].Stock[index]; got != 2 {
-		t.Fatalf("reloaded stock: got %d, want 2", got)
+	if got := loaded.Chunks[coord].Stock[index]; got != 0 {
+		t.Fatalf("reloaded stock: got %d, want 0", got)
 	}
-	if len(loaded.Players.Stacks) != 1 || loaded.Players.Stacks[0].ItemID != ItemWood || loaded.Players.Stacks[0].Amount != 1 {
+	if got := loaded.Chunks[coord].CoverCell(index).Kind(); got != world.CoverGrass {
+		t.Fatalf("reloaded cover: got %d, want grass", got)
+	}
+	if stackAmountFromStacks(loaded.Players.Stacks, ItemWood) != treeWoodYield(TreeStageMature) {
 		t.Fatalf("reloaded inventory: got %+v", loaded.Players.Stacks)
 	}
 }
@@ -516,6 +630,8 @@ func TestMovePersistsActorThroughFileStoreRestart(t *testing.T) {
 func writeGameTestMap(t *testing.T, path string, coord world.ChunkCoord, index uint16, stock uint16) {
 	t.Helper()
 	ch := world.NewChunk(coord.X, coord.Y)
+	ch.Base[index] = uint16(world.PackBase(world.BiomeBirchForest, world.SoilGrass, 8, 0))
+	ch.Cover[index] = uint16(world.PackCover(world.CoverBirchForest, TreeStageMature, 0))
 	ch.Stock[index] = stock
 	m := &mapgen.Map{
 		Width:  2048,
@@ -536,4 +652,22 @@ func writeGameTestMap(t *testing.T, path string, coord world.ChunkCoord, index u
 	if err := file.Close(); err != nil {
 		t.Fatalf("close map: %v", err)
 	}
+}
+
+func stackAmount(items []InventoryItem, itemID inventory.ItemID) uint32 {
+	for _, item := range items {
+		if item.ItemID == itemID {
+			return item.Amount
+		}
+	}
+	return 0
+}
+
+func stackAmountFromStacks(stacks []inventory.Stack, itemID inventory.ItemID) uint32 {
+	for _, stack := range stacks {
+		if stack.ItemID == itemID {
+			return stack.Amount
+		}
+	}
+	return 0
 }

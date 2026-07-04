@@ -138,6 +138,7 @@ export function App() {
         move(1, 0);
       if (event.key === " " || event.key.toLowerCase() === "e")
         void action("harvest", {});
+      if (event.key.toLowerCase() === "p") void action("plant_tree", {});
     };
 
     window.addEventListener("resize", resize);
@@ -530,6 +531,17 @@ export function App() {
               onClick={() => void action("harvest", {})}
             >
               ⛏
+            </button>
+            <button
+              class="icon-button"
+              id="plantTree"
+              type="button"
+              disabled={busy()}
+              aria-label="Посадить дерево"
+              title="Посадить дерево"
+              onClick={() => void action("plant_tree", {})}
+            >
+              ♧
             </button>
             <button
               class="icon-button"

@@ -70,7 +70,12 @@ func (s *Service) SeedDemoWorld(worldID uint64) actor.Actor {
 
 	act := s.seedDemoActorLocked(worldID)
 	coord, _ := world.ToChunkCoord(act.X, act.Y)
-	s.ensureChunkLocked(worldID, coord)
+	ch := s.ensureChunkLocked(worldID, coord)
+	_, index := world.ToChunkCoord(act.X, act.Y)
+	ch.SetBase(index, world.PackBase(world.BiomeBirchForest, world.SoilGrass, 8, 0))
+	ch.SetWater(index, world.PackWater(world.WaterNone, 0, false))
+	ch.SetCover(index, world.PackCover(world.CoverBirchForest, TreeStageMature, 0))
+	ch.SetStock(index, uint16(treeWoodYield(TreeStageMature)))
 	s.renderSeeds[worldID] = "demo"
 	return act
 }

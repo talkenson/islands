@@ -280,12 +280,25 @@ func createCell(m *Map, x, y int, config Config, continents []Continent, heightN
 	stock := uint16(0)
 	if forestKind, density, ok := createForest(x, y, moisture, temperature, biome, forestNoise, config); ok {
 		cover = forestKind
-		level = uint8(clamp(math.Round(1+density*4), 1, 5))
-		stock = uint16(math.Round(6 + density*18))
+		level = uint8(clamp(math.Round(2+density*2), 1, 4))
+		stock = treeStockForLevel(level)
 	}
 
 	setCell(m, x, y, world.PackBase(biome, soil, uint8(height*31), 0), world.PackWater(world.WaterNone, 0, false), world.PackCover(cover, level, 0), stock)
 	setTemperature(m, x, y, temperature)
+}
+
+func treeStockForLevel(level uint8) uint16 {
+	switch level {
+	case 1:
+		return 0
+	case 2:
+		return 1
+	case 3:
+		return 7
+	default:
+		return 11
+	}
 }
 
 func getLakeBasinDepth(x, y, continentInfluence, edgeFalloff float64, continents []Continent, config Config, lakeNoise *valueNoise) float64 {

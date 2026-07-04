@@ -7,6 +7,7 @@ import (
 
 const (
 	ItemWood        inventory.ItemID = 1
+	ItemTreeSapling inventory.ItemID = 2
 	PocketSlotLimit                  = 9
 )
 
@@ -79,6 +80,18 @@ func (s *Service) restoreStackLocked(invID uint64, itemID inventory.ItemID, prev
 	stackSet.Restore(itemID, previous, true)
 }
 
+func (s *Service) removeStackLocked(invID uint64, itemID inventory.ItemID, amount uint32) bool {
+	stackSet := s.stacks[inventory.ID(invID)]
+	if stackSet == nil {
+		return false
+	}
+	ok := stackSet.Remove(itemID, amount)
+	if stackSet.Len() == 0 {
+		delete(s.stacks, inventory.ID(invID))
+	}
+	return ok
+}
+
 func (s *Service) inventorySnapshotLocked(act actor.Actor) []InventoryItem {
 	stackSet := s.stacks[inventory.ID(act.PocketInventoryID)]
 	if stackSet == nil || stackSet.Len() == 0 {
@@ -117,6 +130,8 @@ func itemName(itemID inventory.ItemID) string {
 	switch itemID {
 	case ItemWood:
 		return "wood"
+	case ItemTreeSapling:
+		return "tree sapling"
 	default:
 		return "unknown"
 	}
