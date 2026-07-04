@@ -1,0 +1,698 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Atlas Editor</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+        background: #111417;
+        color: #e6ebf0;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: #111417;
+      }
+
+      main {
+        display: grid;
+        grid-template-columns: minmax(420px, 1fr) 360px;
+        gap: 14px;
+        min-height: 100vh;
+        padding: 14px;
+      }
+
+      .workspace,
+      .panel,
+      .slot-list {
+        border: 1px solid #303841;
+        background: #171c22;
+      }
+
+      .workspace {
+        display: grid;
+        grid-template-rows: auto minmax(320px, 1fr) auto;
+        gap: 12px;
+        min-width: 0;
+        padding: 12px;
+      }
+
+      .panel {
+        display: grid;
+        grid-template-rows: auto auto 1fr auto;
+        gap: 12px;
+        padding: 12px;
+        min-height: 0;
+      }
+
+      .toolbar,
+      .row,
+      .swatches {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      h1,
+      h2 {
+        margin: 0;
+      }
+
+      h1 {
+        font-size: 18px;
+      }
+
+      h2 {
+        margin-bottom: 8px;
+        color: #aeb8c4;
+        font-size: 12px;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+
+      label {
+        display: grid;
+        gap: 4px;
+        color: #aeb8c4;
+        font-size: 12px;
+      }
+
+      input,
+      select,
+      button {
+        min-height: 32px;
+        border: 1px solid #3c4651;
+        background: #202730;
+        color: #eef3f7;
+        font: inherit;
+      }
+
+      select {
+        width: 100%;
+        padding: 0 8px;
+      }
+
+      input[type="file"] {
+        width: 100%;
+        padding: 8px;
+      }
+
+      button {
+        padding: 0 10px;
+        cursor: pointer;
+      }
+
+      button.active {
+        border-color: #d6bd75;
+        background: #3b3322;
+      }
+
+      canvas {
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+      }
+
+      #tileCanvas {
+        align-self: start;
+        width: min(72vh, 640px);
+        height: min(72vh, 640px);
+        max-width: 100%;
+        aspect-ratio: 1;
+        border: 1px solid #3c4651;
+        background-color: #202730;
+        background-image:
+          linear-gradient(45deg, #2b323b 25%, transparent 25%),
+          linear-gradient(-45deg, #2b323b 25%, transparent 25%),
+          linear-gradient(45deg, transparent 75%, #2b323b 75%),
+          linear-gradient(-45deg, transparent 75%, #2b323b 75%);
+        background-position:
+          0 0,
+          0 8px,
+          8px -8px,
+          -8px 0;
+        background-size: 16px 16px;
+      }
+
+      .atlas-wrap {
+        overflow: auto;
+        border: 1px solid #303841;
+        background: #0d1014;
+        padding: 8px;
+      }
+
+      #atlasCanvas {
+        display: block;
+      }
+
+      .slot-list {
+        min-height: 0;
+        overflow: auto;
+        padding: 6px;
+      }
+
+      .slot-button {
+        display: flex;
+        width: 100%;
+        justify-content: space-between;
+        align-items: center;
+        margin: 0 0 4px;
+        text-align: left;
+      }
+
+      .slot-meta {
+        color: #94a0ad;
+        font-size: 11px;
+      }
+
+      .swatch {
+        width: 32px;
+        min-height: 32px;
+        padding: 0;
+      }
+
+      .swatch.active {
+        outline: 2px solid #d6bd75;
+        outline-offset: 2px;
+      }
+
+      .transparent {
+        background:
+          linear-gradient(45deg, #323b45 25%, transparent 25%),
+          linear-gradient(-45deg, #323b45 25%, transparent 25%),
+          linear-gradient(45deg, transparent 75%, #323b45 75%),
+          linear-gradient(-45deg, transparent 75%, #323b45 75%),
+          #15191e;
+        background-position:
+          0 0,
+          0 8px,
+          8px -8px,
+          -8px 0;
+        background-size: 16px 16px;
+      }
+
+      .status {
+        min-height: 18px;
+        color: #aeb8c4;
+        font-size: 12px;
+      }
+
+      @media (max-width: 940px) {
+        main {
+          grid-template-columns: 1fr;
+        }
+
+        #tileCanvas {
+          width: 100%;
+          height: auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="workspace">
+        <div class="toolbar">
+          <h1>Atlas Editor</h1>
+          <button id="pencilButton" class="active" type="button">Pencil</button>
+          <button id="eraserButton" type="button">Eraser</button>
+          <button id="eyedropperButton" type="button">Pick</button>
+        </div>
+
+        <canvas id="tileCanvas" width="512" height="512"></canvas>
+
+        <div class="atlas-wrap">
+          <canvas id="atlasCanvas" width="1024" height="256"></canvas>
+        </div>
+      </section>
+
+      <aside class="panel">
+        <section>
+          <h2>Atlas</h2>
+          <label>
+            Current PNG
+            <select id="atlasSelect"></select>
+          </label>
+          <div class="row">
+            <button id="downloadAtlasButton" type="button">Export PNG</button>
+            <button id="downloadTileButton" type="button">Export Tile</button>
+          </div>
+          <input id="fileInput" type="file" accept="image/png,image/*" />
+        </section>
+
+        <section>
+          <h2>Palette</h2>
+          <div id="swatches" class="swatches"></div>
+        </section>
+
+        <section class="slot-list" id="slotList" aria-label="Atlas slots"></section>
+
+        <section>
+          <h2>Info</h2>
+          <div id="selection" class="status">loading manifest...</div>
+          <div id="position" class="status"></div>
+          <div id="status" class="status"></div>
+        </section>
+      </aside>
+    </main>
+
+    <script type="module">
+      const manifestURL = "/assets/tiles/atlas-manifest.json";
+      const tileCanvas = document.querySelector("#tileCanvas");
+      const atlasCanvas = document.querySelector("#atlasCanvas");
+      const tileCtx = tileCanvas.getContext("2d", { willReadFrequently: true });
+      const atlasCtx = atlasCanvas.getContext("2d", { willReadFrequently: true });
+      const atlasSelect = document.querySelector("#atlasSelect");
+      const fileInput = document.querySelector("#fileInput");
+      const swatches = document.querySelector("#swatches");
+      const slotList = document.querySelector("#slotList");
+      const selection = document.querySelector("#selection");
+      const status = document.querySelector("#status");
+      const position = document.querySelector("#position");
+      const pencilButton = document.querySelector("#pencilButton");
+      const eraserButton = document.querySelector("#eraserButton");
+      const eyedropperButton = document.querySelector("#eyedropperButton");
+
+      let colors = [];
+
+      const state = {
+        manifest: undefined,
+        atlasID: "terrain",
+        tileSize: 16,
+        tileX: 0,
+        tileY: 0,
+        selectedSlot: undefined,
+        tool: "pencil",
+        color: undefined,
+        pointerDown: false,
+        filename: "atlas.png",
+      };
+
+      const atlas = document.createElement("canvas");
+      const atlasBuffer = atlas.getContext("2d", { willReadFrequently: true });
+      atlasBuffer.imageSmoothingEnabled = false;
+      tileCtx.imageSmoothingEnabled = false;
+      atlasCtx.imageSmoothingEnabled = false;
+
+      bindEvents();
+      await init();
+
+      async function init() {
+        state.manifest = await fetchJSON(manifestURL);
+        state.tileSize = state.manifest.tileSize;
+        colors = state.manifest.palette;
+        state.color =
+          colors.find((color) => color.id === "shade_dark") || colors[0];
+        initSwatches();
+        initAtlasSelect();
+        await loadAtlas("terrain");
+      }
+
+      function initAtlasSelect() {
+        atlasSelect.replaceChildren();
+        Object.entries(state.manifest.atlases).forEach(([id, atlasInfo]) => {
+          const option = document.createElement("option");
+          option.value = id;
+          option.textContent = `${id} · ${atlasInfo.file}`;
+          atlasSelect.append(option);
+        });
+      }
+
+      async function loadAtlas(id) {
+        state.atlasID = id;
+        atlasSelect.value = id;
+        const atlasInfo = state.manifest.atlases[id];
+        state.filename = atlasInfo.file;
+        const image = await loadImage(`/assets/tiles/${atlasInfo.file}`);
+        atlas.width = image.naturalWidth;
+        atlas.height = image.naturalHeight;
+        atlasBuffer.imageSmoothingEnabled = false;
+        atlasBuffer.clearRect(0, 0, atlas.width, atlas.height);
+        atlasBuffer.drawImage(image, 0, 0);
+        selectSlot(slotsForAtlas(id)[0]);
+        status.textContent = atlasInfo.file;
+      }
+
+      function bindEvents() {
+        document
+          .querySelector("#downloadAtlasButton")
+          .addEventListener("click", () => downloadCanvas(atlas, state.filename));
+        document
+          .querySelector("#downloadTileButton")
+          .addEventListener("click", () =>
+            downloadCanvas(tileSource(), `${state.selectedSlot.id}.png`),
+          );
+
+        atlasSelect.addEventListener("change", () => {
+          void loadAtlas(atlasSelect.value);
+        });
+        pencilButton.addEventListener("click", () => setTool("pencil"));
+        eraserButton.addEventListener("click", () => setTool("eraser"));
+        eyedropperButton.addEventListener("click", () => setTool("eyedropper"));
+
+        fileInput.addEventListener("change", () => {
+          const file = fileInput.files?.[0];
+          if (!file) {
+            return;
+          }
+          const image = new Image();
+          image.onload = () => {
+            atlas.width = image.naturalWidth;
+            atlas.height = image.naturalHeight;
+            atlasBuffer.imageSmoothingEnabled = false;
+            atlasBuffer.clearRect(0, 0, atlas.width, atlas.height);
+            atlasBuffer.drawImage(image, 0, 0);
+            state.filename = file.name;
+            status.textContent = file.name;
+            selectSlot(slotsForAtlas(state.atlasID)[0]);
+          };
+          image.src = URL.createObjectURL(file);
+        });
+
+        tileCanvas.addEventListener("contextmenu", (event) =>
+          event.preventDefault(),
+        );
+        tileCanvas.addEventListener("pointerdown", (event) => {
+          state.pointerDown = true;
+          tileCanvas.setPointerCapture(event.pointerId);
+          paintFromEvent(event);
+        });
+        tileCanvas.addEventListener("pointermove", (event) => {
+          updatePosition(event);
+          if (state.pointerDown) {
+            paintFromEvent(event);
+          }
+        });
+        tileCanvas.addEventListener("pointerup", () => {
+          state.pointerDown = false;
+        });
+        tileCanvas.addEventListener("pointerleave", () => {
+          state.pointerDown = false;
+        });
+
+        atlasCanvas.addEventListener("click", (event) => {
+          const point = canvasPoint(atlasCanvas, event);
+          const scale = atlasCanvas.width / atlas.width;
+          const x = Math.floor(point.x / scale / state.tileSize);
+          const y = Math.floor(point.y / scale / state.tileSize);
+          const slot = slotsForAtlas(state.atlasID).find(
+            (candidate) => candidate.x === x && candidate.y === y,
+          );
+          if (slot) {
+            selectSlot(slot);
+          }
+        });
+      }
+
+      function initSwatches() {
+        swatches.replaceChildren();
+        colors.forEach((color) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = `swatch ${color.rgba[3] === 0 ? "transparent" : ""}`;
+          button.title = `${color.label} · ${color.type}`;
+          if (color.rgba[3] !== 0) {
+            button.style.background = rgbaCSS(color.rgba);
+          }
+          button.addEventListener("click", () => {
+            state.color = color;
+            setTool(color.rgba[3] === 0 ? "eraser" : "pencil");
+            refreshSwatches();
+          });
+          swatches.append(button);
+        });
+        refreshSwatches();
+      }
+
+      function renderSlotList() {
+        slotList.replaceChildren();
+        slotsForAtlas(state.atlasID).forEach((slot) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "slot-button";
+          button.classList.toggle("active", slot.id === state.selectedSlot?.id);
+          button.innerHTML = `<span>${slot.id}</span><span class="slot-meta">${slot.meta}</span>`;
+          button.addEventListener("click", () => selectSlot(slot));
+          slotList.append(button);
+        });
+      }
+
+      function slotsForAtlas(id) {
+        const atlasInfo = state.manifest.atlases[id];
+        if (id === "terrain") {
+          return atlasInfo.slots.map((slot) => ({
+            id: slot.id,
+            x: slot.x,
+            y: slot.y,
+            meta: `${slot.kind} · ${slot.x},${slot.y}`,
+          }));
+        }
+
+        return atlasInfo.styles.flatMap((style) =>
+          Array.from({ length: 16 }, (_, mask) => ({
+            id: `${style.id}_${maskLabel(mask)}`,
+            x: mask,
+            y: style.row,
+            meta: `mask ${mask.toString(2).padStart(4, "0")}`,
+          })),
+        );
+      }
+
+      function selectSlot(slot) {
+        state.selectedSlot = slot;
+        state.tileX = slot.x * state.tileSize;
+        state.tileY = slot.y * state.tileSize;
+        renderSlotList();
+        render();
+      }
+
+      function paintFromEvent(event) {
+        const pixel = tilePixelFromEvent(event);
+        if (!pixel) {
+          return;
+        }
+
+        const x = state.tileX + pixel.x;
+        const y = state.tileY + pixel.y;
+        if (state.tool === "eyedropper") {
+          pickColor(x, y);
+          return;
+        }
+
+        const color =
+          event.button === 2 || state.tool === "eraser"
+            ? [0, 0, 0, 0]
+            : state.color.rgba;
+        const image = atlasBuffer.createImageData(1, 1);
+        image.data.set(color);
+        atlasBuffer.putImageData(image, x, y);
+        render();
+      }
+
+      function pickColor(x, y) {
+        const data = atlasBuffer.getImageData(x, y, 1, 1).data;
+        const exact = colors.find((color) =>
+          color.rgba.every((channel, index) => channel === data[index]),
+        );
+        if (!exact) {
+          status.textContent = "pixel is outside the fixed palette";
+          return;
+        }
+        state.color = exact;
+        setTool("pencil");
+        refreshSwatches();
+      }
+
+      function render() {
+        renderTile();
+        renderAtlas();
+        const slot = state.selectedSlot;
+        selection.textContent = slot
+          ? `${state.filename} · ${slot.id} · ${slot.meta}`
+          : state.filename;
+      }
+
+      function renderTile() {
+        const displaySize = tileCanvas.width;
+        tileCtx.clearRect(0, 0, displaySize, displaySize);
+        tileCtx.imageSmoothingEnabled = false;
+        tileCtx.drawImage(
+          atlas,
+          state.tileX,
+          state.tileY,
+          state.tileSize,
+          state.tileSize,
+          0,
+          0,
+          displaySize,
+          displaySize,
+        );
+
+        const step = displaySize / state.tileSize;
+        tileCtx.strokeStyle = "rgba(255,255,255,0.16)";
+        tileCtx.lineWidth = 1;
+        for (let i = 0; i <= state.tileSize; i++) {
+          const p = Math.floor(i * step) + 0.5;
+          tileCtx.beginPath();
+          tileCtx.moveTo(p, 0);
+          tileCtx.lineTo(p, displaySize);
+          tileCtx.stroke();
+          tileCtx.beginPath();
+          tileCtx.moveTo(0, p);
+          tileCtx.lineTo(displaySize, p);
+          tileCtx.stroke();
+        }
+      }
+
+      function renderAtlas() {
+        const scale = Math.max(1, Math.floor(1024 / atlas.width));
+        atlasCanvas.width = atlas.width * scale;
+        atlasCanvas.height = atlas.height * scale;
+        atlasCtx.imageSmoothingEnabled = false;
+        atlasCtx.clearRect(0, 0, atlasCanvas.width, atlasCanvas.height);
+        atlasCtx.drawImage(atlas, 0, 0, atlasCanvas.width, atlasCanvas.height);
+
+        atlasCtx.strokeStyle = "rgba(255,255,255,0.16)";
+        atlasCtx.lineWidth = 1;
+        for (let x = 0; x <= atlas.width; x += state.tileSize) {
+          atlasCtx.beginPath();
+          atlasCtx.moveTo(x * scale + 0.5, 0);
+          atlasCtx.lineTo(x * scale + 0.5, atlasCanvas.height);
+          atlasCtx.stroke();
+        }
+        for (let y = 0; y <= atlas.height; y += state.tileSize) {
+          atlasCtx.beginPath();
+          atlasCtx.moveTo(0, y * scale + 0.5);
+          atlasCtx.lineTo(atlasCanvas.width, y * scale + 0.5);
+          atlasCtx.stroke();
+        }
+
+        atlasCtx.strokeStyle = "#d6bd75";
+        atlasCtx.lineWidth = 2;
+        atlasCtx.strokeRect(
+          state.tileX * scale + 1,
+          state.tileY * scale + 1,
+          state.tileSize * scale - 2,
+          state.tileSize * scale - 2,
+        );
+      }
+
+      function refreshSwatches() {
+        [...swatches.children].forEach((button, index) => {
+          button.classList.toggle("active", colors[index] === state.color);
+        });
+      }
+
+      function setTool(tool) {
+        state.tool = tool;
+        pencilButton.classList.toggle("active", tool === "pencil");
+        eraserButton.classList.toggle("active", tool === "eraser");
+        eyedropperButton.classList.toggle("active", tool === "eyedropper");
+      }
+
+      function updatePosition(event) {
+        const pixel = tilePixelFromEvent(event);
+        if (!pixel) {
+          return;
+        }
+        position.textContent = `pixel ${pixel.x}, ${pixel.y}`;
+      }
+
+      function tilePixelFromEvent(event) {
+        const point = canvasPoint(tileCanvas, event);
+        const pixelSize = tileCanvas.width / state.tileSize;
+        const x = Math.floor(point.x / pixelSize);
+        const y = Math.floor(point.y / pixelSize);
+        if (x < 0 || y < 0 || x >= state.tileSize || y >= state.tileSize) {
+          return undefined;
+        }
+        return { x, y };
+      }
+
+      function canvasPoint(canvas, event) {
+        const rect = canvas.getBoundingClientRect();
+        return {
+          x: ((event.clientX - rect.left) / rect.width) * canvas.width,
+          y: ((event.clientY - rect.top) / rect.height) * canvas.height,
+        };
+      }
+
+      function tileSource() {
+        const tile = document.createElement("canvas");
+        tile.width = state.tileSize;
+        tile.height = state.tileSize;
+        const context = tile.getContext("2d");
+        context.imageSmoothingEnabled = false;
+        context.drawImage(
+          atlas,
+          state.tileX,
+          state.tileY,
+          state.tileSize,
+          state.tileSize,
+          0,
+          0,
+          state.tileSize,
+          state.tileSize,
+        );
+        return tile;
+      }
+
+      function downloadCanvas(canvas, filename) {
+        canvas.toBlob((blob) => {
+          if (!blob) {
+            status.textContent = "export failed";
+            return;
+          }
+          const link = document.createElement("a");
+          link.href = URL.createObjectURL(blob);
+          link.download = filename;
+          link.click();
+          URL.revokeObjectURL(link.href);
+        }, "image/png");
+      }
+
+      async function fetchJSON(url) {
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`failed to load ${url}`);
+        }
+        return response.json();
+      }
+
+      function loadImage(url) {
+        return new Promise((resolve, reject) => {
+          const image = new Image();
+          image.onload = () => resolve(image);
+          image.onerror = () => reject(new Error(`failed to load ${url}`));
+          image.src = `${url}?v=${Date.now()}`;
+        });
+      }
+
+      function maskLabel(mask) {
+        if (mask === 0) {
+          return "none";
+        }
+        return [
+          mask & 1 ? "n" : "",
+          mask & 2 ? "e" : "",
+          mask & 4 ? "s" : "",
+          mask & 8 ? "w" : "",
+        ].join("");
+      }
+
+      function rgbaCSS(rgba) {
+        return `rgba(${rgba[0]}, ${rgba[1]}, ${rgba[2]}, ${rgba[3] / 255})`;
+      }
+    </script>
+  </body>
+</html>

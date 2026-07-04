@@ -42,7 +42,6 @@ func (s *Server) routes() {
 	protected := auth.Middleware(s.auth)
 	s.mux.Handle("GET /api/v1/worlds/{worldID}/stream", protected(http.HandlerFunc(s.stream)))
 	s.mux.Handle("POST /api/v1/worlds/{worldID}/actions", protected(http.HandlerFunc(s.actions)))
-	s.mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServer(http.Dir("assets"))))
 	s.mux.Handle("GET /", http.FileServer(http.Dir("client/dist")))
 }
 

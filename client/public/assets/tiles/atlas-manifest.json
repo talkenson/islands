@@ -1,0 +1,76 @@
+{
+  "tileSize": 16,
+  "shadeFormat": {
+    "description": "Transparent pixels leave the map palette color unchanged. Non-transparent grayscale pixels tint the map palette color by gray - 128 and use source alpha. Non-grayscale pixels are authored direct colors.",
+    "neutralGray": 128,
+    "directions": {
+      "N": 1,
+      "E": 2,
+      "S": 4,
+      "W": 8
+    }
+  },
+  "palette": [
+    { "id": "erase", "label": "transparent", "type": "transparent", "rgba": [0, 0, 0, 0] },
+    { "id": "shade_deep", "label": "shade -72", "type": "shade", "rgba": [56, 56, 56, 220] },
+    { "id": "shade_dark", "label": "shade -48", "type": "shade", "rgba": [80, 80, 80, 210] },
+    { "id": "shade_soft", "label": "shade -24", "type": "shade", "rgba": [104, 104, 104, 190] },
+    { "id": "light_soft", "label": "light +24", "type": "shade", "rgba": [152, 152, 152, 180] },
+    { "id": "light_clear", "label": "light +48", "type": "shade", "rgba": [176, 176, 176, 200] },
+    { "id": "light_bright", "label": "light +72", "type": "shade", "rgba": [200, 200, 200, 220] },
+    { "id": "leaf_dark", "label": "leaf dark", "type": "color", "rgba": [31, 79, 46, 235] },
+    { "id": "leaf_light", "label": "leaf light", "type": "color", "rgba": [95, 143, 67, 230] },
+    { "id": "pine_dark", "label": "pine dark", "type": "color", "rgba": [24, 56, 38, 235] },
+    { "id": "water_deep", "label": "water deep", "type": "color", "rgba": [35, 97, 132, 220] },
+    { "id": "water_foam", "label": "water foam", "type": "color", "rgba": [139, 215, 220, 190] },
+    { "id": "sand_gold", "label": "sand gold", "type": "color", "rgba": [216, 189, 106, 220] },
+    { "id": "rock_dark", "label": "rock dark", "type": "color", "rgba": [91, 98, 93, 230] },
+    { "id": "rock_light", "label": "rock light", "type": "color", "rgba": [169, 170, 160, 220] },
+    { "id": "wood_dark", "label": "wood dark", "type": "color", "rgba": [74, 52, 37, 235] },
+    { "id": "wood_light", "label": "wood light", "type": "color", "rgba": [138, 103, 66, 220] },
+    { "id": "marker_gold", "label": "marker gold", "type": "color", "rgba": [214, 189, 117, 220] }
+  ],
+  "atlases": {
+    "terrain": {
+      "file": "terrain-atlas.png",
+      "columns": 8,
+      "rows": 2,
+      "slots": [
+        { "id": "grass_a", "kind": "grass", "index": 0, "x": 0, "y": 0 },
+        { "id": "grass_b", "kind": "grass", "index": 1, "x": 1, "y": 0 },
+        { "id": "sand_a", "kind": "sand", "index": 2, "x": 2, "y": 0 },
+        { "id": "sand_b", "kind": "sand", "index": 3, "x": 3, "y": 0 },
+        { "id": "rock_a", "kind": "rock", "index": 4, "x": 4, "y": 0 },
+        { "id": "rock_b", "kind": "rock", "index": 5, "x": 5, "y": 0 },
+        { "id": "mountain_a", "kind": "mountain", "index": 6, "x": 6, "y": 0 },
+        { "id": "mountain_b", "kind": "mountain", "index": 7, "x": 7, "y": 0 },
+        { "id": "water_a", "kind": "water", "index": 8, "x": 0, "y": 1 },
+        { "id": "water_b", "kind": "water", "index": 9, "x": 1, "y": 1 },
+        { "id": "river_a", "kind": "river", "index": 10, "x": 2, "y": 1 },
+        { "id": "river_b", "kind": "river", "index": 11, "x": 3, "y": 1 },
+        { "id": "forest_a", "kind": "forest", "index": 12, "x": 4, "y": 1 },
+        { "id": "forest_b", "kind": "forest", "index": 13, "x": 5, "y": 1 },
+        { "id": "bush_a", "kind": "bush", "index": 14, "x": 6, "y": 1 },
+        { "id": "bush_b", "kind": "bush", "index": 15, "x": 7, "y": 1 }
+      ]
+    },
+    "surface": {
+      "file": "surface-atlas.png",
+      "columns": 16,
+      "rows": 4,
+      "maskOrder": "slot = row * 16 + mask; mask bits are N=1, E=2, S=4, W=8",
+      "rowsByStyle": {
+        "trail": 0,
+        "dirt_road": 1,
+        "stone_road": 2,
+        "fence": 3
+      },
+      "styles": [
+        { "id": "trail", "row": 0 },
+        { "id": "dirt_road", "row": 1 },
+        { "id": "stone_road", "row": 2 },
+        { "id": "fence", "row": 3 }
+      ]
+    }
+  }
+}

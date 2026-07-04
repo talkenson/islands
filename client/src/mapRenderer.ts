@@ -10,6 +10,16 @@ import { CHUNK_SIZE, DEFAULT_RENDER_CONFIG, TILE_SIZE } from "./config";
 import type { ColorNoise } from "./noise";
 import { ValueNoise } from "./noise";
 import { chunkKey } from "./chunks";
+import {
+  MASK_E,
+  MASK_N,
+  MASK_S,
+  MASK_W,
+  TEXTURED_TILE_PIXELS,
+  TileAtlas,
+  type SurfaceStyle,
+  type TilePaint,
+} from "./tileAtlas";
 import type {
   Actor,
   ChunkSnapshot,
@@ -47,7 +57,10 @@ const FOG_MASK_MAX_WIDTH = 320;
 const FOG_MASK_MAX_HEIGHT = 240;
 const FOG_LOADED_CHUNK_MULTIPLIER = 0.8;
 const FOG_LOADED_EDGE_FEATHER_TILES = 8;
+const TEXTURED_LOD_ENABLED = false;
+const TEXTURED_LOD_MIN_TILE_PIXELS = 18;
 type ChunkLookup = Map<number, Set<number>>;
+type ChunkLOD = "pixel" | "textured";
 
 interface PhaseLighting {
   color: number;
@@ -60,8 +73,31 @@ interface PhaseLighting {
 interface ChunkView {
   sprite: Sprite;
   texture: Texture;
+  lod: ChunkLOD;
+  tilePixels: number;
   source: ChunkSnapshot;
   renderRevision: number;
+}
+
+interface BuiltChunkTexture {
+  texture: Texture;
+  lod: ChunkLOD;
+  tilePixels: number;
+}
+
+interface DecodedCell {
+  stock: number;
+  soil: number;
+  biome: number;
+  waterKind: number;
+  waterLevel: number;
+  waterTidal: boolean;
+  coverKind: number;
+  coverLevel: number;
+  coverFlags: number;
+  surfaceKind: number;
+  surfaceLevel: number;
+  height: number;
 }
 
 interface PendingFrame {
@@ -85,9 +121,11 @@ export class MapRenderer {
   private initialized = false;
   private destroyed = false;
   private pendingFrame: PendingFrame | undefined;
+  private latestFrame: PendingFrame | undefined;
   private fogImage: ImageData | undefined;
   private renderConfig = DEFAULT_RENDER_CONFIG;
   private colorNoise: ColorNoise = new ValueNoise(DEFAULT_RENDER_CONFIG.seed);
+  private readonly tileAtlas = TEXTURED_LOD_ENABLED ? new TileAtlas() : undefined;
   private textureRevision = 0;
   private viewport: Viewport = { scale: 1, ox: 0, oy: 0, zoom: 2 };
 
@@ -102,6 +140,16 @@ export class MapRenderer {
     this.fogCtx = fogContext;
     this.fogTexture = this.textureFromCanvas(this.fogCanvas, "linear");
     this.fogSprite = new Sprite({ texture: this.fogTexture });
+    this.tileAtlas?.whenReady(() => {
+      this.textureRevision += 1;
+      if (this.latestFrame && this.initialized && this.app) {
+        this.draw(
+          this.latestFrame.actor,
+          this.latestFrame.chunks,
+          this.latestFrame.worldTime,
+        );
+      }
+    });
 
     void this.init();
   }
@@ -109,6 +157,7 @@ export class MapRenderer {
   setRenderConfig(renderConfig: RenderConfig): void {
     this.renderConfig = renderConfig;
     this.colorNoise = new ValueNoise(renderConfig.seed);
+    this.tileAtlas?.clear();
     this.textureRevision += 1;
     if (this.pendingFrame) {
       return;
@@ -175,6 +224,7 @@ export class MapRenderer {
     chunks: Map<string, ChunkSnapshot>,
     worldTime: WorldTime,
   ): void {
+    this.latestFrame = { actor, chunks, worldTime };
     if (!this.initialized || !this.app) {
       this.pendingFrame = { actor, chunks, worldTime };
       return;
@@ -192,7 +242,7 @@ export class MapRenderer {
       zoom: this.viewport.zoom,
     };
 
-    this.updateChunkSprites(chunks);
+    this.updateChunkSprites(chunks, tile);
     this.worldLayer.position.set(centerX, centerY);
     this.worldLayer.scale.set(tile);
 
@@ -266,14 +316,19 @@ export class MapRenderer {
     }
   }
 
-  private updateChunkSprites(chunks: Map<string, ChunkSnapshot>): void {
+  private updateChunkSprites(
+    chunks: Map<string, ChunkSnapshot>,
+    tile: number,
+  ): void {
     const dirty = new Set<string>();
+    const lod = chunkLODForTile(tile);
 
     for (const [key, chunk] of chunks) {
       const view = this.chunkViews.get(key);
       if (
         !view ||
         view.source !== chunk ||
+        view.lod !== lod ||
         view.renderRevision !== this.textureRevision
       ) {
         addDirtyChunkAndNeighbors(dirty, chunk.cx, chunk.cy);
@@ -297,7 +352,7 @@ export class MapRenderer {
       if (!chunk) {
         continue;
       }
-      this.upsertChunkSprite(key, chunk, chunks);
+      this.upsertChunkSprite(key, chunk, chunks, lod);
     }
   }
 
@@ -305,16 +360,20 @@ export class MapRenderer {
     key: string,
     chunk: ChunkSnapshot,
     chunks: Map<string, ChunkSnapshot>,
+    lod: ChunkLOD,
   ): void {
-    const texture = this.buildChunkTexture(chunk, chunks);
+    const built = this.buildChunkTexture(chunk, chunks, lod);
     const view = this.chunkViews.get(key);
     if (!view) {
-      const sprite = new Sprite({ texture, roundPixels: true });
+      const sprite = new Sprite({ texture: built.texture, roundPixels: true });
       sprite.position.set(chunk.cx * CHUNK_SIZE, chunk.cy * CHUNK_SIZE);
+      sprite.scale.set(1 / built.tilePixels);
       this.chunkLayer.addChild(sprite);
       this.chunkViews.set(key, {
         sprite,
-        texture,
+        texture: built.texture,
+        lod: built.lod,
+        tilePixels: built.tilePixels,
         source: chunk,
         renderRevision: this.textureRevision,
       });
@@ -322,9 +381,12 @@ export class MapRenderer {
     }
 
     const oldTexture = view.texture;
-    view.sprite.texture = texture;
+    view.sprite.texture = built.texture;
     view.sprite.position.set(chunk.cx * CHUNK_SIZE, chunk.cy * CHUNK_SIZE);
-    view.texture = texture;
+    view.sprite.scale.set(1 / built.tilePixels);
+    view.texture = built.texture;
+    view.lod = built.lod;
+    view.tilePixels = built.tilePixels;
     view.source = chunk;
     view.renderRevision = this.textureRevision;
     oldTexture.destroy(true);
@@ -333,7 +395,18 @@ export class MapRenderer {
   private buildChunkTexture(
     chunk: ChunkSnapshot,
     chunks: Map<string, ChunkSnapshot>,
-  ): Texture {
+    lod: ChunkLOD,
+  ): BuiltChunkTexture {
+    if (lod === "textured") {
+      return this.buildTexturedChunkTexture(chunk, chunks);
+    }
+    return this.buildPixelChunkTexture(chunk, chunks);
+  }
+
+  private buildPixelChunkTexture(
+    chunk: ChunkSnapshot,
+    chunks: Map<string, ChunkSnapshot>,
+  ): BuiltChunkTexture {
     const canvas = document.createElement("canvas");
     canvas.width = CHUNK_SIZE;
     canvas.height = CHUNK_SIZE;
@@ -350,7 +423,43 @@ export class MapRenderer {
       context.fillStyle = this.cellColor(chunk, chunks, i, wx, wy);
       context.fillRect(lx, ly, 1, 1);
     }
-    return this.textureFromCanvas(canvas, "nearest");
+    return {
+      texture: this.textureFromCanvas(canvas, "nearest"),
+      lod: "pixel",
+      tilePixels: 1,
+    };
+  }
+
+  private buildTexturedChunkTexture(
+    chunk: ChunkSnapshot,
+    chunks: Map<string, ChunkSnapshot>,
+  ): BuiltChunkTexture {
+    const canvas = document.createElement("canvas");
+    canvas.width = CHUNK_SIZE * TEXTURED_TILE_PIXELS;
+    canvas.height = CHUNK_SIZE * TEXTURED_TILE_PIXELS;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      throw new Error("2d textured chunk canvas context is unavailable");
+    }
+    context.imageSmoothingEnabled = false;
+    for (let i = 0; i < CHUNK_SIZE * CHUNK_SIZE; i++) {
+      const lx = i % CHUNK_SIZE;
+      const ly = Math.floor(i / CHUNK_SIZE);
+      const wx = chunk.cx * CHUNK_SIZE + lx;
+      const wy = chunk.cy * CHUNK_SIZE + ly;
+      const paint = this.cellTilePaint(chunk, chunks, i, wx, wy);
+      this.tileAtlas?.drawTile(
+        context,
+        paint,
+        lx * TEXTURED_TILE_PIXELS,
+        ly * TEXTURED_TILE_PIXELS,
+      );
+    }
+    return {
+      texture: this.textureFromCanvas(canvas, "nearest"),
+      lod: "textured",
+      tilePixels: TEXTURED_TILE_PIXELS,
+    };
   }
 
   private textureFromCanvas(
@@ -488,6 +597,260 @@ export class MapRenderer {
     this.lightingLayer
       .rect(0, 0, screenWidth, screenHeight)
       .fill({ color: lighting.color, alpha: lighting.alpha });
+  }
+
+  private cellTilePaint(
+    chunk: ChunkSnapshot,
+    chunks: Map<string, ChunkSnapshot>,
+    index: number,
+    wx: number,
+    wy: number,
+  ): TilePaint {
+    const cell = this.decodeCell(chunk, index);
+    const paint = this.baseTilePaint(cell, chunks, wx, wy);
+    const style = surfaceStyle(cell.surfaceKind);
+    if (style) {
+      paint.surface = {
+        color: surfaceColor(
+          cell.surfaceKind,
+          cell.surfaceLevel,
+          wx,
+          wy,
+          this.colorNoise,
+        ),
+        style,
+        mask: this.surfaceConnectionMask(chunks, wx, wy, cell.surfaceKind),
+        variant: tileVariant(wx, wy),
+      };
+    }
+    return paint;
+  }
+
+  private baseTilePaint(
+    cell: DecodedCell,
+    chunks: Map<string, ChunkSnapshot>,
+    wx: number,
+    wy: number,
+  ): TilePaint {
+    const palette = this.renderConfig.palette;
+    const variant = tileVariant(wx, wy);
+
+    if (cell.waterKind !== WATER_NONE) {
+      if (cell.waterKind === WATER_RIVER) {
+        const baseColor =
+          this.colorNoise.noise2D(wx * 0.2, wy * 0.2) > 0.55
+            ? palette.water.river_variant
+            : palette.water.river;
+        return {
+          baseColor: shade(baseColor, Math.round((cell.waterLevel - 1) * 4)),
+          kind: "river",
+          variant,
+        };
+      }
+      if (cell.waterTidal) {
+        const baseColor =
+          cell.waterKind === WATER_LAKE
+            ? palette.water.tidal_lake
+            : palette.water.tidal_sea;
+        return {
+          baseColor: shade(
+            baseColor,
+            Math.round(cell.waterLevel * -1.5 + cell.height * 12),
+          ),
+          kind: "water",
+          variant,
+        };
+      }
+      if (cell.waterKind === WATER_LAKE) {
+        return {
+          baseColor: shade(palette.water.lake, Math.round(cell.height * 18)),
+          kind: "water",
+          variant,
+        };
+      }
+      return {
+        baseColor: shade(palette.water.sea, Math.round(cell.height * 22)),
+        kind: "water",
+        variant,
+      };
+    }
+
+    if ((cell.coverFlags & COVER_FLAG_MOUNTAIN) !== 0) {
+      const n = this.colorNoise.octaveNoise2D(
+        wx * 0.13 + 11,
+        wy * 0.13 + 19,
+        3,
+        0.5,
+      );
+      const baseColor =
+        n <= 0.58
+          ? palette.terrain.mountain_dark
+          : palette.terrain.mountain_light;
+      return {
+        baseColor: shade(baseColor, Math.round((n - 0.5) * 22)),
+        kind: "mountain",
+        variant,
+      };
+    }
+    if ((cell.coverFlags & COVER_FLAG_ROCK) !== 0 || cell.soil === SOIL_ROCKY) {
+      const n = this.colorNoise.octaveNoise2D(
+        wx * 0.13 + 11,
+        wy * 0.13 + 19,
+        3,
+        0.5,
+      );
+      const color = this.hasWaterNeighbor(chunks, wx, wy)
+        ? palette.terrain.coastal_rock
+        : palette.terrain.rock;
+      return {
+        baseColor: shade(color, Math.round((n - 0.5) * 20)),
+        kind: "rock",
+        variant,
+      };
+    }
+
+    switch (cell.coverKind) {
+      case COVER_BIRCH_FOREST:
+        return {
+          baseColor: shade(
+            palette.cover.birch_forest,
+            cell.coverLevel * 2 + Math.round(coverDensity(cell.stock) * 12),
+          ),
+          kind: "forest",
+          variant,
+          density: coverDensity(cell.stock),
+        };
+      case COVER_PINE_FOREST:
+        return {
+          baseColor: shade(
+            palette.cover.pine_forest,
+            cell.coverLevel * 2 + Math.round(coverDensity(cell.stock) * 12),
+          ),
+          kind: "forest",
+          variant,
+          density: coverDensity(cell.stock),
+        };
+      case COVER_MIXED_FOREST:
+        return {
+          baseColor: shade(
+            palette.cover.mixed_forest,
+            cell.coverLevel * 2 + Math.round(coverDensity(cell.stock) * 12),
+          ),
+          kind: "forest",
+          variant,
+          density: coverDensity(cell.stock),
+        };
+      case COVER_DRY_BUSH:
+        return {
+          baseColor: shade(
+            palette.cover.dry_bush,
+            Math.round(coverDensity(cell.stock) * 10),
+          ),
+          kind: "bush",
+          variant,
+          density: coverDensity(cell.stock),
+        };
+      case COVER_BUSH:
+        return {
+          baseColor: shade(palette.cover.bush, cell.coverLevel),
+          kind: "bush",
+          variant,
+          density: coverDensity(cell.stock),
+        };
+    }
+
+    if (cell.soil === SOIL_SAND) {
+      const n = this.colorNoise.octaveNoise2D(
+        wx * 0.11 + 7,
+        wy * 0.11 + 13,
+        3,
+        0.52,
+      );
+      return {
+        baseColor: shade(palette.terrain.sand, Math.round((n - 0.5) * 16)),
+        kind: "sand",
+        variant,
+      };
+    }
+
+    const colors = this.biomeColors(cell.biome);
+    const n = this.colorNoise.octaveNoise2D(wx * 0.09, wy * 0.09, 3, 0.5);
+    const colorIndex = Math.min(
+      colors.length - 1,
+      Math.floor(n * colors.length),
+    );
+    return {
+      baseColor: shade(
+        colors[colorIndex] || colors[0] || "#7bb96b",
+        Math.round((n - 0.5) * 18),
+      ),
+      kind: "grass",
+      variant,
+    };
+  }
+
+  private decodeCell(chunk: ChunkSnapshot, index: number): DecodedCell {
+    const base = chunk.base[index] || 0;
+    const water = chunk.water[index] || 0;
+    const cover = chunk.cover[index] || 0;
+    const surface = chunk.surface[index] || 0;
+    const stock = chunk.stock[index] || 0;
+    const elevation = (base >> 9) & 31;
+    return {
+      stock,
+      soil: (base >> 5) & 15,
+      biome: base & 31,
+      waterKind: water & 15,
+      waterLevel: (water >> 4) & 7,
+      waterTidal: (water & 128) !== 0,
+      coverKind: cover & 255,
+      coverLevel: (cover >> 8) & 15,
+      coverFlags: (cover >> 12) & 15,
+      surfaceKind: surface & 255,
+      surfaceLevel: (surface >> 8) & 15,
+      height:
+        chunk.meta.length > index
+          ? (chunk.meta[index] || 0) / 255
+          : elevation / 31,
+    };
+  }
+
+  private surfaceConnectionMask(
+    chunks: Map<string, ChunkSnapshot>,
+    wx: number,
+    wy: number,
+    surfaceKind: number,
+  ): number {
+    let mask = 0;
+    if (surfacesConnect(surfaceKind, this.surfaceKindAt(chunks, wx, wy - 1))) {
+      mask |= MASK_N;
+    }
+    if (surfacesConnect(surfaceKind, this.surfaceKindAt(chunks, wx + 1, wy))) {
+      mask |= MASK_E;
+    }
+    if (surfacesConnect(surfaceKind, this.surfaceKindAt(chunks, wx, wy + 1))) {
+      mask |= MASK_S;
+    }
+    if (surfacesConnect(surfaceKind, this.surfaceKindAt(chunks, wx - 1, wy))) {
+      mask |= MASK_W;
+    }
+    return mask;
+  }
+
+  private surfaceKindAt(
+    chunks: Map<string, ChunkSnapshot>,
+    wx: number,
+    wy: number,
+  ): number {
+    const cx = Math.floor(wx / CHUNK_SIZE);
+    const cy = Math.floor(wy / CHUNK_SIZE);
+    const lx = ((wx % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+    const ly = ((wy % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+    const chunk = chunks.get(chunkKey(cx, cy));
+    if (!chunk) {
+      return 0;
+    }
+    return (chunk.surface[ly * CHUNK_SIZE + lx] || 0) & 255;
   }
 
   private cellColor(
@@ -707,6 +1070,51 @@ function addDirtyChunkAndNeighbors(
   dirty.add(chunkKey(cx + 1, cy));
   dirty.add(chunkKey(cx, cy - 1));
   dirty.add(chunkKey(cx, cy + 1));
+}
+
+function chunkLODForTile(tile: number): ChunkLOD {
+  return TEXTURED_LOD_ENABLED && tile >= TEXTURED_LOD_MIN_TILE_PIXELS
+    ? "textured"
+    : "pixel";
+}
+
+function tileVariant(wx: number, wy: number): number {
+  return Math.abs((wx * 73856093) ^ (wy * 19349663)) & 255;
+}
+
+function surfaceStyle(kind: number): SurfaceStyle | undefined {
+  switch (kind) {
+    case SURFACE_TRAIL:
+      return "trail";
+    case SURFACE_DIRT_ROAD:
+      return "dirt_road";
+    case SURFACE_STONE_ROAD:
+      return "stone_road";
+    case SURFACE_FENCE:
+    case SURFACE_GATE:
+      return "fence";
+    default:
+      return undefined;
+  }
+}
+
+function surfacesConnect(a: number, b: number): boolean {
+  const group = surfaceConnectionGroup(a);
+  return group !== undefined && group === surfaceConnectionGroup(b);
+}
+
+function surfaceConnectionGroup(kind: number): "road" | "fence" | undefined {
+  switch (kind) {
+    case SURFACE_TRAIL:
+    case SURFACE_DIRT_ROAD:
+    case SURFACE_STONE_ROAD:
+      return "road";
+    case SURFACE_FENCE:
+    case SURFACE_GATE:
+      return "fence";
+    default:
+      return undefined;
+  }
 }
 
 function coverDensity(stock: number): number {
