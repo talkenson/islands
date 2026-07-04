@@ -9,9 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"islands/internal/actor"
 	"islands/internal/auth"
 	"islands/internal/game"
 	"islands/internal/realtime"
+	"islands/internal/storage"
 	"islands/internal/world"
 )
 
@@ -112,6 +114,49 @@ func TestActionsUseActorFromToken(t *testing.T) {
 	}
 	if result.MoveDelayMS == 0 || result.Target == nil {
 		t.Fatalf("move timer fields were not returned: %+v", result)
+	}
+}
+
+func TestActionsRejectDeepWaterMoveWithMessage(t *testing.T) {
+	hub := realtime.NewHub()
+	gameService := game.NewService(hub, realtime.Config{VisibleChunkRadius: 1})
+	manager := auth.NewManager("test-secret", time.Hour)
+	server := NewServer(manager, gameService, hub)
+	targetX := game.DemoActorStartX + 1
+	targetY := game.DemoActorStartY
+	coord, targetIndex := world.ToChunkCoord(targetX, targetY)
+	ch := world.NewChunk(coord.X, coord.Y)
+	ch.SetWater(targetIndex, world.PackWater(world.WaterSea, 2, false))
+	if err := gameService.LoadWorld(1, storage.WorldState{
+		Width:  world.ChunkSize,
+		Height: world.ChunkSize,
+		Seed:   "deep-water-test",
+		Chunks: map[world.ChunkCoord]*world.Chunk{coord: ch},
+		Players: storage.PlayerState{Actors: map[actor.ID]*actor.Actor{
+			1: {ID: 1, WorldID: 1, X: game.DemoActorStartX, Y: game.DemoActorStartY, PocketInventoryID: 1},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := manager.Issue(1, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := bytes.NewBufferString(`{"action_type":"move","x":901,"y":1900}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/worlds/1/actions", body)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status: got %d, want %d, body=%s", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"code":"water_blocked"`) {
+		t.Fatalf("body missing water code: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"message":"В воду зайти нельзя"`) {
+		t.Fatalf("body missing water message: %s", rec.Body.String())
 	}
 }
 

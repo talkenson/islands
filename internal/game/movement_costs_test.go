@@ -70,3 +70,41 @@ func TestMovementCostBlocksFenceAndClosedGate(t *testing.T) {
 		t.Fatalf("open gate should be passable, got cost=%d passable=%v", cost, passable)
 	}
 }
+
+func TestMovementCostAllowsShallowWater(t *testing.T) {
+	ch := world.NewChunk(0, 0)
+	ch.Water[0] = uint8(world.PackWater(world.WaterSea, 1, false))
+
+	if cost, passable := movementCostMS(ch, 0); !passable || cost == 0 {
+		t.Fatalf("shallow water should be passable, got cost=%d passable=%v", cost, passable)
+	}
+}
+
+func TestMovementCostBlocksDeepWater(t *testing.T) {
+	ch := world.NewChunk(0, 0)
+	ch.Water[0] = uint8(world.PackWater(world.WaterSea, 2, false))
+
+	cost, passable, reason := movementCostWithBlockReason(ch, 0)
+
+	if passable || cost != MovementBlockedCostMS {
+		t.Fatalf("deep water should block movement, got cost=%d passable=%v", cost, passable)
+	}
+	if reason != movementBlockDeepWater {
+		t.Fatalf("block reason: got %d, want %d", reason, movementBlockDeepWater)
+	}
+}
+
+func TestMovementCostUsesSurfaceBeforeDeepWater(t *testing.T) {
+	ch := world.NewChunk(0, 0)
+	ch.Water[0] = uint8(world.PackWater(world.WaterSea, 3, false))
+	ch.Surface[0] = uint16(world.PackSurface(world.SurfaceBridge, 1, 0))
+
+	got, passable := movementCostMS(ch, 0)
+
+	if !passable {
+		t.Fatalf("bridge over deep water should be passable")
+	}
+	if got != surfaceMoveCostMS[world.SurfaceBridge] {
+		t.Fatalf("cost: got %d, want bridge cost %d", got, surfaceMoveCostMS[world.SurfaceBridge])
+	}
+}

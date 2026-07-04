@@ -251,6 +251,39 @@ func TestMoveStartsPendingMovement(t *testing.T) {
 	}
 }
 
+func TestMoveIntoDeepWaterIsRejected(t *testing.T) {
+	service := NewService(realtime.NewHub(), realtime.Config{VisibleChunkRadius: 1})
+	act := service.SeedDemoWorld(1)
+	targetX := act.X + 1
+	targetY := act.Y
+	targetCoord, targetIndex := world.ToChunkCoord(targetX, targetY)
+	service.mu.Lock()
+	service.ensureChunkLocked(1, targetCoord).SetWater(targetIndex, world.PackWater(world.WaterSea, 2, false))
+	service.mu.Unlock()
+
+	result, err := service.ApplyAction(context.Background(), 1, 1, ActionRequest{ActionType: "move", X: targetX, Y: targetY})
+
+	if !errors.Is(err, ErrWaterBlocked) {
+		t.Fatalf("move error: got %v, want %v", err, ErrWaterBlocked)
+	}
+	if result.MoveDelayMS != 0 || result.Target != nil {
+		t.Fatalf("blocked move should not return timer fields: %+v", result)
+	}
+	current, err := service.Actor(context.Background(), 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.X != act.X || current.Y != act.Y {
+		t.Fatalf("actor moved: got %d,%d want %d,%d", current.X, current.Y, act.X, act.Y)
+	}
+	service.mu.Lock()
+	pending := service.pendingMoves[act.ID]
+	service.mu.Unlock()
+	if pending != nil {
+		t.Fatalf("blocked move created pending move: %+v", pending)
+	}
+}
+
 func TestPendingMoveBlocksAnotherMove(t *testing.T) {
 	service := NewService(realtime.NewHub(), realtime.Config{VisibleChunkRadius: 1})
 	act := service.SeedDemoWorld(1)

@@ -18,6 +18,7 @@ var (
 	ErrInvalidAction = errors.New("invalid_action")
 	ErrNotVisible    = errors.New("not_visible")
 	ErrConflict      = errors.New("conflict")
+	ErrWaterBlocked  = errors.New("water_blocked")
 )
 
 const (

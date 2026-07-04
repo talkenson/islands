@@ -258,6 +258,8 @@ func writeGameError(w http.ResponseWriter, err error) {
 		auth.WriteError(w, http.StatusForbidden, "not_visible", "target is not visible")
 	case errors.Is(err, game.ErrInvalidAction):
 		auth.WriteError(w, http.StatusBadRequest, "invalid_action", "invalid action")
+	case errors.Is(err, game.ErrWaterBlocked):
+		auth.WriteError(w, http.StatusConflict, "water_blocked", "В воду зайти нельзя")
 	case errors.Is(err, game.ErrConflict):
 		auth.WriteError(w, http.StatusConflict, "conflict", "action conflicts with current state")
 	default:

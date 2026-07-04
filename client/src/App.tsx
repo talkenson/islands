@@ -1,4 +1,12 @@
-import { createMemo, createSignal, For, Show, onCleanup, onMount } from "solid-js";
+import {
+  createMemo,
+  createSignal,
+  For,
+  Show,
+  onCleanup,
+  onMount,
+  type JSX,
+} from "solid-js";
 import {
   connectStream,
   errorMessage,
@@ -13,7 +21,7 @@ import {
   normalizeChunk,
   normalizeInventory,
 } from "./chunks";
-import { readCellMeta } from "./cellMeta";
+import { readCellMeta, type CellMeta } from "./cellMeta";
 import { Panel } from "./components/Panel";
 import { MAX_ZOOM, MIN_ZOOM } from "./config";
 import { MapRenderer } from "./mapRenderer";
@@ -54,10 +62,23 @@ const DAY_PHASES = [
   "night",
 ] as const;
 
+const HOVER_INFO_RADIUS = 31;
+const HOVER_INFO_RADIUS_SQUARED = HOVER_INFO_RADIUS * HOVER_INFO_RADIUS;
+const TOOLTIP_OFFSET = 16;
+const TOOLTIP_MARGIN = 8;
+const TOOLTIP_WIDTH = 292;
+const TOOLTIP_COMPACT_HEIGHT = 156;
+const TOOLTIP_FULL_HEIGHT = 430;
+
 interface PendingMove {
   delayMS: number;
   readyAt: number;
   target?: WorldCell;
+}
+
+interface CursorPosition {
+  x: number;
+  y: number;
 }
 
 export function App() {
@@ -93,7 +114,10 @@ export function App() {
   const [inventory, setInventory] = createSignal<InventoryItem[]>([]);
   const [worldTime, setWorldTime] = createSignal<WorldTime>(DEFAULT_WORLD_TIME);
   const [hoveredCell, setHoveredCell] = createSignal<WorldCell | undefined>();
-  const [selectedCell, setSelectedCell] = createSignal<WorldCell | undefined>();
+  const [cursorPosition, setCursorPosition] = createSignal<
+    CursorPosition | undefined
+  >();
+  const [altPressed, setAltPressed] = createSignal(false);
   const [worldRevision, setWorldRevision] = createSignal(0);
   const [collapsedPanels, setCollapsedPanels] = createSignal<
     Partial<Record<PanelID, boolean>>
@@ -104,14 +128,46 @@ export function App() {
     const cell = hoveredCell();
     return cell ? `${cell.x}, ${cell.y}` : "-";
   });
-  const selectedCellMeta = createMemo(() => {
-    const cell = selectedCell();
+  const actorCellMeta = createMemo(() => {
+    const currentActor = actor();
+    worldRevision();
+    return readCellMeta(chunks, { x: currentActor.x, y: currentActor.y });
+  });
+  const tooltipCell = createMemo(() => {
+    const cell = hoveredCell();
+    if (!cell) {
+      return undefined;
+    }
+    const currentActor = actor();
+    const dx = cell.x - currentActor.x;
+    const dy = cell.y - currentActor.y;
+    return dx * dx + dy * dy <= HOVER_INFO_RADIUS_SQUARED ? cell : undefined;
+  });
+  const tooltipCellMeta = createMemo(() => {
+    const cell = tooltipCell();
     worldRevision();
     return cell ? readCellMeta(chunks, cell) : undefined;
   });
-  const selectedPosition = createMemo(() => {
-    const cell = selectedCell();
-    return cell ? `${cell.x}, ${cell.y}` : "-";
+  const tooltipStyle = createMemo<JSX.CSSProperties>(() => {
+    const position = cursorPosition();
+    if (!position) {
+      return {};
+    }
+    const tooltipHeight = altPressed()
+      ? TOOLTIP_FULL_HEIGHT
+      : TOOLTIP_COMPACT_HEIGHT;
+    return {
+      left: `${clamp(
+        position.x + TOOLTIP_OFFSET,
+        TOOLTIP_MARGIN,
+        window.innerWidth - TOOLTIP_WIDTH - TOOLTIP_MARGIN,
+      )}px`,
+      top: `${clamp(
+        position.y + TOOLTIP_OFFSET,
+        TOOLTIP_MARGIN,
+        window.innerHeight - tooltipHeight - TOOLTIP_MARGIN,
+      )}px`,
+    };
   });
   const subtitle = createMemo(() => `Пользователь #${actor().id}`);
   const daySummary = createMemo(
@@ -154,6 +210,10 @@ export function App() {
       setNowMS(now);
     }, 100);
     const keydown = (event: KeyboardEvent) => {
+      if (event.key === "Alt") {
+        event.preventDefault();
+        setAltPressed(true);
+      }
       if (event.repeat) {
         return;
       }
@@ -178,9 +238,18 @@ export function App() {
         void action("harvest", {});
       if (key === "p" && !actionLocked()) void action("plant_tree", {});
     };
+    const keyup = (event: KeyboardEvent) => {
+      if (event.key === "Alt") {
+        event.preventDefault();
+        setAltPressed(false);
+      }
+    };
+    const blur = () => setAltPressed(false);
 
     window.addEventListener("resize", resize);
     window.addEventListener("keydown", keydown);
+    window.addEventListener("keyup", keyup);
+    window.addEventListener("blur", blur);
     void boot();
 
     onCleanup(() => {
@@ -190,6 +259,8 @@ export function App() {
       window.clearInterval(movementClock);
       window.removeEventListener("resize", resize);
       window.removeEventListener("keydown", keydown);
+      window.removeEventListener("keyup", keyup);
+      window.removeEventListener("blur", blur);
     });
   });
 
@@ -395,12 +466,13 @@ export function App() {
   }
 
   function trackHover(event: MouseEvent): void {
+    setCursorPosition({ x: event.clientX, y: event.clientY });
     setHoveredCell(renderer?.cellAtClientPoint(event.clientX, event.clientY));
   }
 
-  function selectHoveredCell(event: MouseEvent): void {
-    const cell = renderer?.cellAtClientPoint(event.clientX, event.clientY);
-    setSelectedCell(cell);
+  function clearHover(): void {
+    setHoveredCell(undefined);
+    setCursorPosition(undefined);
   }
 
   function isPanelCollapsed(id: PanelID): boolean {
@@ -419,8 +491,7 @@ export function App() {
           id="worldCanvas"
           width="768"
           height="768"
-          onClick={selectHoveredCell}
-          onMouseLeave={() => setHoveredCell(undefined)}
+          onMouseLeave={clearHover}
           onMouseMove={trackHover}
           onWheel={zoomCanvas}
         />
@@ -432,6 +503,48 @@ export function App() {
             <span class="move-spinner" />
             <strong>{actionLoaderText()}</strong>
           </div>
+        </Show>
+        <Show when={tooltipCell()}>
+          {(cell) => (
+            <div
+              classList={{ "cell-tooltip": true, expanded: altPressed() }}
+              style={tooltipStyle()}
+            >
+              <Show
+                when={tooltipCellMeta()}
+                fallback={
+                  <>
+                    <div class="cell-tooltip-title">
+                      <strong>
+                        {cell().x}, {cell().y}
+                      </strong>
+                    </div>
+                    <p class="panel-empty">чанк не загружен</p>
+                  </>
+                }
+              >
+                {(meta) => (
+                  <>
+                    <div class="cell-tooltip-title">
+                      <strong>
+                        {meta().cell.x}, {meta().cell.y}
+                      </strong>
+                      <span>{meta().biome}</span>
+                    </div>
+                    <Show
+                      when={altPressed()}
+                      fallback={<CompactCellMeta meta={meta()} />}
+                    >
+                      <CellMetaList meta={meta()} dense />
+                    </Show>
+                  </>
+                )}
+              </Show>
+              <div class="cell-tooltip-hint">
+                {altPressed() ? "[Alt] кратко" : "[Alt] вся инфа"}
+              </div>
+            </div>
+          )}
         </Show>
       </section>
 
@@ -505,83 +618,13 @@ export function App() {
           <Panel
             title="Клетка"
             collapsed={isPanelCollapsed("cell")}
-            summary={selectedPosition()}
+            summary={actorPosition()}
             onToggle={() => togglePanel("cell")}
           >
-            {selectedCell() ? (
-              selectedCellMeta() ? (
-                <dl class="cell-meta">
-                  <div>
-                    <dt>Биом</dt>
-                    <dd>{selectedCellMeta()?.biome}</dd>
-                  </div>
-                  <div>
-                    <dt>Почва</dt>
-                    <dd>{selectedCellMeta()?.soil}</dd>
-                  </div>
-                  <div>
-                    <dt>Вода</dt>
-                    <dd>
-                      {selectedCellMeta()?.water}
-                      {selectedCellMeta()?.waterTidal ? " tidal" : ""}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Покров</dt>
-                    <dd>{selectedCellMeta()?.cover}</dd>
-                  </div>
-                  <div>
-                    <dt>Поверхность</dt>
-                    <dd>{selectedCellMeta()?.surface}</dd>
-                  </div>
-                  <div>
-                    <dt>Высота</dt>
-                    <dd>
-                      {selectedCellMeta()?.height}/
-                      {selectedCellMeta()?.elevation}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Температура</dt>
-                    <dd>{selectedCellMeta()?.temperature} °C</dd>
-                  </div>
-                  <div>
-                    <dt>Запас</dt>
-                    <dd>{selectedCellMeta()?.stock}</dd>
-                  </div>
-                  <div>
-                    <dt>Уровни</dt>
-                    <dd>
-                      w{selectedCellMeta()?.waterLevel} c
-                      {selectedCellMeta()?.coverLevel} s
-                      {selectedCellMeta()?.surfaceLevel}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Флаги</dt>
-                    <dd>
-                      b{selectedCellMeta()?.baseFlags} c
-                      {selectedCellMeta()?.coverFlags} s
-                      {selectedCellMeta()?.surfaceFlags}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Чанк</dt>
-                    <dd>
-                      {selectedCellMeta()?.cx}, {selectedCellMeta()?.cy} #
-                      {selectedCellMeta()?.index}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Тик</dt>
-                    <dd>{selectedCellMeta()?.updatedTick}</dd>
-                  </div>
-                </dl>
-              ) : (
-                <p class="panel-empty">чанк не загружен</p>
-              )
+            {actorCellMeta() ? (
+              <CellMetaList meta={actorCellMeta() as CellMeta} />
             ) : (
-              <p class="panel-empty">кликни по карте</p>
+              <p class="panel-empty">чанк не загружен</p>
             )}
           </Panel>
 
@@ -705,6 +748,110 @@ export function App() {
   );
 }
 
+function CellMetaList(props: { meta: CellMeta; dense?: boolean }) {
+  return (
+    <dl classList={{ "cell-meta": true, "cell-meta-dense": !!props.dense }}>
+      <div>
+        <dt>Биом</dt>
+        <dd>{props.meta.biome}</dd>
+      </div>
+      <div>
+        <dt>Почва</dt>
+        <dd>{props.meta.soil}</dd>
+      </div>
+      <div>
+        <dt>Вода</dt>
+        <dd>
+          {props.meta.water}
+          {props.meta.waterTidal ? " tidal" : ""}
+        </dd>
+      </div>
+      <div>
+        <dt>Покров</dt>
+        <dd>{props.meta.cover}</dd>
+      </div>
+      <div>
+        <dt>Поверхность</dt>
+        <dd>{props.meta.surface}</dd>
+      </div>
+      <div>
+        <dt>Высота</dt>
+        <dd>
+          {props.meta.height}/{props.meta.elevation}
+        </dd>
+      </div>
+      <div>
+        <dt>Температура</dt>
+        <dd>{props.meta.temperature} °C</dd>
+      </div>
+      <div>
+        <dt>Запас</dt>
+        <dd>{props.meta.stock}</dd>
+      </div>
+      <div>
+        <dt>Уровни</dt>
+        <dd>
+          w{props.meta.waterLevel} c{props.meta.coverLevel} s
+          {props.meta.surfaceLevel}
+        </dd>
+      </div>
+      <div>
+        <dt>Флаги</dt>
+        <dd>
+          b{props.meta.baseFlags} c{props.meta.coverFlags} s
+          {props.meta.surfaceFlags}
+        </dd>
+      </div>
+      <div>
+        <dt>Чанк</dt>
+        <dd>
+          {props.meta.cx}, {props.meta.cy} #{props.meta.index}
+        </dd>
+      </div>
+      <div>
+        <dt>Тик</dt>
+        <dd>{props.meta.updatedTick}</dd>
+      </div>
+    </dl>
+  );
+}
+
+function CompactCellMeta(props: { meta: CellMeta }) {
+  return (
+    <dl class="cell-tooltip-compact">
+      <div>
+        <dt>Почва</dt>
+        <dd>{props.meta.soil}</dd>
+      </div>
+      <div>
+        <dt>Вода</dt>
+        <dd>
+          {props.meta.water}
+          {props.meta.waterTidal ? " tidal" : ""}
+        </dd>
+      </div>
+      <div>
+        <dt>Покров</dt>
+        <dd>{props.meta.cover}</dd>
+      </div>
+      <div>
+        <dt>Поверхность</dt>
+        <dd>{props.meta.surface}</dd>
+      </div>
+      <div>
+        <dt>Запас</dt>
+        <dd>{props.meta.stock}</dd>
+      </div>
+      <div>
+        <dt>Высота</dt>
+        <dd>
+          {props.meta.height}/{props.meta.elevation}
+        </dd>
+      </div>
+    </dl>
+  );
+}
+
 function phaseLabel(phase: WorldTime["phase"]): string {
   switch (phase) {
     case "late_night":
@@ -724,6 +871,11 @@ function phaseLabel(phase: WorldTime["phase"]): string {
     case "night":
       return "ночь";
   }
+}
+
+function clamp(value: number, min: number, max: number): number {
+  const resolvedMax = Math.max(min, max);
+  return Math.min(Math.max(value, min), resolvedMax);
 }
 
 function mergeActor(current: Actor, patch: Parameters<typeof normalizeActor>[0]): Actor {

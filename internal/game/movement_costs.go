@@ -7,6 +7,14 @@ const (
 	SurfaceFlagOpen       uint8  = 1 << 0
 )
 
+type movementBlockReason uint8
+
+const (
+	movementBlockNone movementBlockReason = iota
+	movementBlockSurface
+	movementBlockDeepWater
+)
+
 var surfaceMoveCostMS = map[world.SurfaceKind]uint64{
 	world.SurfaceTrail:     300,
 	world.SurfaceDirtRoad:  220,
@@ -40,23 +48,37 @@ var soilMoveCostMS = map[world.Soil]uint64{
 const defaultMoveCostMS uint64 = 800
 
 func movementCostMS(ch *world.Chunk, index uint16) (uint64, bool) {
+	cost, passable, _ := movementCostWithBlockReason(ch, index)
+	return cost, passable
+}
+
+func movementCostWithBlockReason(ch *world.Chunk, index uint16) (uint64, bool, movementBlockReason) {
 	surface := ch.SurfaceCell(index)
 	if surface.Kind() != world.SurfaceNone {
-		return surfaceMovementCostMS(surface)
+		cost, passable := surfaceMovementCostMS(surface)
+		if !passable {
+			return cost, false, movementBlockSurface
+		}
+		return cost, true, movementBlockNone
+	}
+
+	water := ch.WaterCell(index)
+	if water.Kind() != world.WaterNone && water.Level() > 2 {
+		return MovementBlockedCostMS, false, movementBlockDeepWater
 	}
 
 	cover := ch.CoverCell(index)
 	if cover.Kind() != world.CoverNone {
 		if cost, ok := coverMoveCostMS[cover.Kind()]; ok {
-			return cost, true
+			return cost, true, movementBlockNone
 		}
 	}
 
 	base := ch.BaseCell(index)
 	if cost, ok := soilMoveCostMS[base.Soil()]; ok {
-		return cost, true
+		return cost, true, movementBlockNone
 	}
-	return defaultMoveCostMS, true
+	return defaultMoveCostMS, true, movementBlockNone
 }
 
 func surfaceMovementCostMS(surface world.SurfaceCell) (uint64, bool) {

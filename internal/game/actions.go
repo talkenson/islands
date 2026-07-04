@@ -78,9 +78,12 @@ func (s *Service) ApplyAction(ctx context.Context, worldID, actorID uint64, req 
 			targetChunk = s.ensureChunkLocked(worldID, targetCoord)
 		}
 		_, targetIndex := world.ToChunkCoord(req.X, req.Y)
-		delayMS, passable := movementCostMS(targetChunk, targetIndex)
+		delayMS, passable, blockReason := movementCostWithBlockReason(targetChunk, targetIndex)
 		if !passable {
 			s.mu.Unlock()
+			if blockReason == movementBlockDeepWater {
+				return ActionResult{}, ErrWaterBlocked
+			}
 			return ActionResult{}, ErrConflict
 		}
 		readyAt := time.Now().Add(time.Duration(delayMS) * time.Millisecond)
