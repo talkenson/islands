@@ -9,6 +9,7 @@ func snapshotChunk(ch *world.Chunk, tick uint64) ChunkSnapshot {
 		Base:        Uint16Layer(append([]uint16(nil), ch.Base...)),
 		Water:       append([]uint8(nil), ch.Water...),
 		Cover:       Uint16Layer(append([]uint16(nil), ch.Cover...)),
+		Surface:     Uint16Layer(append([]uint16(nil), ch.Surface...)),
 		Stock:       Uint16Layer(append([]uint16(nil), ch.Stock...)),
 		Meta:        append([]uint8(nil), ch.Meta...),
 		Temperature: append([]uint8(nil), ch.Temperature...),
@@ -44,6 +45,7 @@ func copyChunks(chunks map[world.ChunkCoord]*world.Chunk) map[world.ChunkCoord]*
 		copy(next.Base, ch.Base)
 		copy(next.Water, ch.Water)
 		copy(next.Cover, ch.Cover)
+		copy(next.Surface, ch.Surface)
 		copy(next.Stock, ch.Stock)
 		copy(next.Meta, ch.Meta)
 		copy(next.Temperature, ch.Temperature)

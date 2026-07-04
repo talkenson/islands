@@ -11,6 +11,7 @@ func TestChunkRoundTrip(t *testing.T) {
 	ch.Base[0] = 12
 	ch.Water[1] = 3
 	ch.Cover[2] = 45
+	ch.Surface[6] = uint16(world.PackSurface(world.SurfaceTrail, 2, 1))
 	ch.Stock[3] = 67
 	ch.Meta[4] = 89
 	ch.Temperature[5] = 123
@@ -27,7 +28,7 @@ func TestChunkRoundTrip(t *testing.T) {
 	if loaded.X != ch.X || loaded.Y != ch.Y {
 		t.Fatalf("coord: got %d,%d want %d,%d", loaded.X, loaded.Y, ch.X, ch.Y)
 	}
-	if loaded.Base[0] != 12 || loaded.Water[1] != 3 || loaded.Cover[2] != 45 || loaded.Stock[3] != 67 || loaded.Meta[4] != 89 || loaded.Temperature[5] != 123 {
+	if loaded.Base[0] != 12 || loaded.Water[1] != 3 || loaded.Cover[2] != 45 || loaded.Surface[6] != ch.Surface[6] || loaded.Stock[3] != 67 || loaded.Meta[4] != 89 || loaded.Temperature[5] != 123 {
 		t.Fatalf("round trip changed chunk arrays")
 	}
 }

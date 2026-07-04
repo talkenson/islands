@@ -46,6 +46,7 @@ export function normalizeChunk(data: ChunkSnapshotWire): ChunkSnapshot {
     base: decodeUint16Layer(data.base),
     water: decodeByteLayer(data.water),
     cover: decodeUint16Layer(data.cover),
+    surface: decodeUint16Layer(data.surface),
     stock: decodeUint16Layer(data.stock),
     meta: decodeByteLayer(data.meta),
     temperature: decodeByteLayer(data.temperature),

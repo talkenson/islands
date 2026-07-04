@@ -47,6 +47,20 @@ func TestPackCoverRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPackSurfaceRoundTrip(t *testing.T) {
+	cell := PackSurface(SurfaceStoneRoad, 3, 5)
+
+	if got := cell.Kind(); got != SurfaceStoneRoad {
+		t.Fatalf("kind: got %d", got)
+	}
+	if got := cell.Level(); got != 3 {
+		t.Fatalf("level: got %d", got)
+	}
+	if got := cell.Flags(); got != 5 {
+		t.Fatalf("flags: got %d", got)
+	}
+}
+
 func TestToChunkCoord(t *testing.T) {
 	tests := []struct {
 		name      string

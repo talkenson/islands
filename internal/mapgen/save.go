@@ -67,6 +67,9 @@ func SaveBinary(w io.Writer, m *Map) error {
 		if err := writeUint16s(w, ch.Cover); err != nil {
 			return err
 		}
+		if err := writeUint16s(w, ch.Surface); err != nil {
+			return err
+		}
 		if err := writeUint16s(w, ch.Stock); err != nil {
 			return err
 		}
@@ -145,6 +148,9 @@ func LoadBinary(r io.Reader) (*Map, error) {
 			return nil, err
 		}
 		if err := readUint16s(r, ch.Cover); err != nil {
+			return nil, err
+		}
+		if err := readUint16s(r, ch.Surface); err != nil {
 			return nil, err
 		}
 		if err := readUint16s(r, ch.Stock); err != nil {

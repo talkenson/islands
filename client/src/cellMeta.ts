@@ -48,7 +48,17 @@ const COVER: Record<number, string> = {
   6: "mixed forest",
   7: "reeds",
   8: "field",
-  9: "road",
+};
+
+const SURFACE: Record<number, string> = {
+  0: "none",
+  1: "trail",
+  2: "dirt road",
+  3: "stone road",
+  4: "fence",
+  5: "gate",
+  6: "bridge",
+  7: "pier",
 };
 
 export interface CellMeta {
@@ -66,6 +76,9 @@ export interface CellMeta {
   cover: string;
   coverLevel: number;
   coverFlags: number;
+  surface: string;
+  surfaceLevel: number;
+  surfaceFlags: number;
   stock: number;
   height: number;
   temperature: number;
@@ -90,11 +103,13 @@ export function readCellMeta(
   const base = chunk.base[index] || 0;
   const water = chunk.water[index] || 0;
   const cover = chunk.cover[index] || 0;
+  const surface = chunk.surface[index] || 0;
   const biome = base & 31;
   const soil = (base >> 5) & 15;
   const elevation = (base >> 9) & 31;
   const waterKind = water & 15;
   const coverKind = cover & 255;
+  const surfaceKind = surface & 255;
   const temperatureRaw =
     chunk.temperature.length > index ? chunk.temperature[index] || 0 : 0;
 
@@ -113,6 +128,9 @@ export function readCellMeta(
     cover: COVER[coverKind] || `cover ${coverKind}`,
     coverLevel: (cover >> 8) & 15,
     coverFlags: (cover >> 12) & 15,
+    surface: SURFACE[surfaceKind] || `surface ${surfaceKind}`,
+    surfaceLevel: (surface >> 8) & 15,
+    surfaceFlags: (surface >> 12) & 15,
     stock: chunk.stock[index] || 0,
     height: chunk.meta.length > index ? chunk.meta[index] || 0 : elevation,
     temperature: temperatureCelsius(temperatureRaw),

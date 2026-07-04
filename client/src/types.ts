@@ -63,6 +63,7 @@ export interface ChunkSnapshotWire {
   base?: number[] | string;
   water?: number[] | string;
   cover?: number[] | string;
+  surface?: number[] | string;
   stock?: number[] | string;
   meta?: number[] | string;
   temperature?: number[] | string;
@@ -75,6 +76,7 @@ export interface ChunkSnapshot {
   base: Uint16Array;
   water: Uint8Array;
   cover: Uint16Array;
+  surface: Uint16Array;
   stock: Uint16Array;
   meta: Uint8Array;
   temperature: Uint8Array;
@@ -86,6 +88,8 @@ export interface ActionResult {
   client_action_id?: string;
   action_type?: ActionType;
   event_id?: number;
+  move_delay_ms?: number;
+  target?: WorldCell;
   code?: string;
   message?: string;
 }

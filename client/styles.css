@@ -160,6 +160,46 @@ h1 {
   display: none;
 }
 
+.move-loader {
+  position: fixed;
+  left: 50%;
+  bottom: 94px;
+  z-index: 12;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid rgba(45, 57, 58, 0.9);
+  background: rgba(16, 20, 23, 0.9);
+  border-radius: 8px;
+  color: var(--text);
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.28);
+  transform: translateX(-50%);
+  backdrop-filter: blur(10px);
+  pointer-events: none;
+}
+
+.move-loader strong {
+  min-width: 34px;
+  font-variant-numeric: tabular-nums;
+}
+
+.move-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(238, 243, 237, 0.22);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 700ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .hud-toggle {
   position: fixed;
   z-index: 20;

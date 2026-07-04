@@ -1,4 +1,4 @@
-import { createMemo, createSignal, For, onCleanup, onMount } from "solid-js";
+import { createMemo, createSignal, For, Show, onCleanup, onMount } from "solid-js";
 import {
   connectStream,
   errorMessage,
@@ -54,6 +54,12 @@ const DAY_PHASES = [
   "night",
 ] as const;
 
+interface PendingMove {
+  delayMS: number;
+  readyAt: number;
+  target?: WorldCell;
+}
+
 export function App() {
   let canvasRef!: HTMLCanvasElement;
   let renderer: MapRenderer | undefined;
@@ -79,6 +85,9 @@ export function App() {
   const [chunkCount, setChunkCount] = createSignal(0);
   const [cellStock, setCellStock] = createSignal("-");
   const [busy, setBusy] = createSignal(false);
+  const [actionStartedAt, setActionStartedAt] = createSignal(0);
+  const [pendingMove, setPendingMove] = createSignal<PendingMove | undefined>();
+  const [nowMS, setNowMS] = createSignal(Date.now());
   const [hudHidden, setHudHidden] = createSignal(false);
   const [events, setEvents] = createSignal<LogEvent[]>([]);
   const [inventory, setInventory] = createSignal<InventoryItem[]>([]);
@@ -111,6 +120,22 @@ export function App() {
   const inventoryTotal = createMemo(() =>
     inventory().reduce((sum, item) => sum + item.amount, 0),
   );
+  const actionLocked = createMemo(() => busy() || pendingMove() !== undefined);
+  const showActionLoader = createMemo(() => {
+    const pending = pendingMove();
+    if (pending) {
+      return pending.delayMS > 100;
+    }
+    const startedAt = actionStartedAt();
+    return busy() && startedAt > 0 && nowMS() - startedAt > 100;
+  });
+  const actionLoaderText = createMemo(() => {
+    const pending = pendingMove();
+    if (!pending) {
+      return "...";
+    }
+    return `${(Math.max(0, pending.readyAt - nowMS()) / 1000).toFixed(1)}s`;
+  });
 
   onMount(() => {
     renderer = new MapRenderer(canvasRef);
@@ -124,21 +149,34 @@ export function App() {
       setWorldTime((current) => advanceWorldTime(current, realSeconds));
       redraw();
     }, 1000);
+    const movementClock = window.setInterval(() => {
+      const now = Date.now();
+      setNowMS(now);
+    }, 100);
     const keydown = (event: KeyboardEvent) => {
-      if (event.repeat || busy()) {
+      if (event.repeat) {
         return;
       }
-      if (event.key === "ArrowUp" || event.key.toLowerCase() === "w")
+      const key = event.key.toLowerCase();
+      if (event.key === "ArrowUp" || key === "w") {
+        if (actionLocked()) return;
         move(0, -1);
-      if (event.key === "ArrowDown" || event.key.toLowerCase() === "s")
+      }
+      if (event.key === "ArrowDown" || key === "s") {
+        if (actionLocked()) return;
         move(0, 1);
-      if (event.key === "ArrowLeft" || event.key.toLowerCase() === "a")
+      }
+      if (event.key === "ArrowLeft" || key === "a") {
+        if (actionLocked()) return;
         move(-1, 0);
-      if (event.key === "ArrowRight" || event.key.toLowerCase() === "d")
+      }
+      if (event.key === "ArrowRight" || key === "d") {
+        if (actionLocked()) return;
         move(1, 0);
-      if (event.key === " " || event.key.toLowerCase() === "e")
+      }
+      if ((event.key === " " || key === "e") && !actionLocked())
         void action("harvest", {});
-      if (event.key.toLowerCase() === "p") void action("plant_tree", {});
+      if (key === "p" && !actionLocked()) void action("plant_tree", {});
     };
 
     window.addEventListener("resize", resize);
@@ -149,6 +187,7 @@ export function App() {
       streamAbort?.abort();
       renderer?.destroy();
       window.clearInterval(clock);
+      window.clearInterval(movementClock);
       window.removeEventListener("resize", resize);
       window.removeEventListener("keydown", keydown);
     });
@@ -220,7 +259,9 @@ export function App() {
         setWorldTime(normalizeWorldTime(hello.world_time));
       }
       if (hello.actor) {
-        setActor(mergeActor(actor(), hello.actor));
+        const nextActor = mergeActor(actor(), hello.actor);
+        setActor(nextActor);
+        clearPendingMoveIfArrived(nextActor);
         redraw();
       }
       setInventory(normalizeInventory(hello.inventory));
@@ -245,6 +286,7 @@ export function App() {
         const previousActor = actor();
         const nextActor = mergeActor(previousActor, patch.actor);
         setActor(nextActor);
+        clearPendingMoveIfArrived(nextActor);
         if (
           previousActor.x !== nextActor.x ||
           previousActor.y !== nextActor.y
@@ -276,30 +318,68 @@ export function App() {
     actionType: ActionType,
     patch: Partial<{ x: number; y: number }>,
   ): Promise<void> {
-    if (busy()) {
+    if (actionLocked()) {
       return;
     }
     setBusy(true);
+    setActionStartedAt(Date.now());
+    setNowMS(Date.now());
     try {
       const result = await postAction(token, worldID(), actionType, patch);
       if (!result.ok) {
+        if (actionType === "move") {
+          setPendingMove(undefined);
+        }
         addEvent(
           "Ошибка",
           result.data.message || result.data.code || result.status,
         );
         return;
       }
+      if (actionType === "move") {
+        const delayMS = result.data.move_delay_ms || 0;
+        setPendingMove({
+          delayMS,
+          readyAt: Date.now() + delayMS,
+          target: result.data.target || moveTargetFromPatch(patch),
+        });
+        setNowMS(Date.now());
+      }
     } catch (err) {
+      if (actionType === "move") {
+        setPendingMove(undefined);
+      }
       setStatus({ kind: "error", text: "ошибка действия" });
       addEvent("Ошибка", errorMessage(err));
     } finally {
       setBusy(false);
+      setActionStartedAt(0);
     }
   }
 
   function move(dx: number, dy: number): void {
     const current = actor();
     void action("move", { x: current.x + dx, y: current.y + dy });
+  }
+
+  function clearPendingMoveIfArrived(nextActor: Actor): void {
+    const pending = pendingMove();
+    if (
+      pending?.target &&
+      nextActor.x === pending.target.x &&
+      nextActor.y === pending.target.y
+    ) {
+      setPendingMove(undefined);
+    }
+  }
+
+  function moveTargetFromPatch(
+    patch: Partial<{ x: number; y: number }>,
+  ): WorldCell | undefined {
+    if (typeof patch.x !== "number" || typeof patch.y !== "number") {
+      return undefined;
+    }
+    return { x: patch.x, y: patch.y };
   }
 
   function zoomCanvas(event: WheelEvent): void {
@@ -347,6 +427,12 @@ export function App() {
         <div classList={{ "map-empty": true, hidden: chunkCount() > 0 }}>
           ожидание чанков
         </div>
+        <Show when={showActionLoader()}>
+          <div class="move-loader" role="status" aria-live="polite">
+            <span class="move-spinner" />
+            <strong>{actionLoaderText()}</strong>
+          </div>
+        </Show>
       </section>
 
       <button
@@ -445,6 +531,10 @@ export function App() {
                     <dd>{selectedCellMeta()?.cover}</dd>
                   </div>
                   <div>
+                    <dt>Поверхность</dt>
+                    <dd>{selectedCellMeta()?.surface}</dd>
+                  </div>
+                  <div>
                     <dt>Высота</dt>
                     <dd>
                       {selectedCellMeta()?.height}/
@@ -463,14 +553,16 @@ export function App() {
                     <dt>Уровни</dt>
                     <dd>
                       w{selectedCellMeta()?.waterLevel} c
-                      {selectedCellMeta()?.coverLevel}
+                      {selectedCellMeta()?.coverLevel} s
+                      {selectedCellMeta()?.surfaceLevel}
                     </dd>
                   </div>
                   <div>
                     <dt>Флаги</dt>
                     <dd>
                       b{selectedCellMeta()?.baseFlags} c
-                      {selectedCellMeta()?.coverFlags}
+                      {selectedCellMeta()?.coverFlags} s
+                      {selectedCellMeta()?.surfaceFlags}
                     </dd>
                   </div>
                   <div>
@@ -503,7 +595,7 @@ export function App() {
               class="icon-button"
               id="moveUp"
               type="button"
-              disabled={busy()}
+              disabled={actionLocked()}
               aria-label="Вверх"
               title="Вверх"
               onClick={() => move(0, -1)}
@@ -514,7 +606,7 @@ export function App() {
               class="icon-button"
               id="moveLeft"
               type="button"
-              disabled={busy()}
+              disabled={actionLocked()}
               aria-label="Влево"
               title="Влево"
               onClick={() => move(-1, 0)}
@@ -525,7 +617,7 @@ export function App() {
               class="icon-button primary"
               id="harvest"
               type="button"
-              disabled={busy()}
+              disabled={actionLocked()}
               aria-label="Собрать ресурс"
               title="Собрать ресурс"
               onClick={() => void action("harvest", {})}
@@ -536,7 +628,7 @@ export function App() {
               class="icon-button"
               id="plantTree"
               type="button"
-              disabled={busy()}
+              disabled={actionLocked()}
               aria-label="Посадить дерево"
               title="Посадить дерево"
               onClick={() => void action("plant_tree", {})}
@@ -547,7 +639,7 @@ export function App() {
               class="icon-button"
               id="moveRight"
               type="button"
-              disabled={busy()}
+              disabled={actionLocked()}
               aria-label="Вправо"
               title="Вправо"
               onClick={() => move(1, 0)}
@@ -558,7 +650,7 @@ export function App() {
               class="icon-button"
               id="moveDown"
               type="button"
-              disabled={busy()}
+              disabled={actionLocked()}
               aria-label="Вниз"
               title="Вниз"
               onClick={() => move(0, 1)}
@@ -574,7 +666,7 @@ export function App() {
             actions={
               <button
                 type="button"
-                disabled={busy()}
+                disabled={actionLocked()}
                 class="text-button"
                 onClick={startStream}
               >

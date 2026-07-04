@@ -107,8 +107,11 @@ func TestActionsUseActorFromToken(t *testing.T) {
 	if !result.Accepted {
 		t.Fatalf("action was not accepted")
 	}
-	if result.EventID == 0 {
-		t.Fatalf("event id was not returned")
+	if result.EventID != 0 {
+		t.Fatalf("move action should not reserve stream event id: got %d", result.EventID)
+	}
+	if result.MoveDelayMS == 0 || result.Target == nil {
+		t.Fatalf("move timer fields were not returned: %+v", result)
 	}
 }
 

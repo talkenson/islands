@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	"islands/internal/actor"
 	"islands/internal/inventory"
@@ -32,6 +33,8 @@ type Service struct {
 	chunks       map[uint64]map[world.ChunkCoord]*world.Chunk
 	loadedWorlds map[uint64]bool
 	renderSeeds  map[uint64]string
+	pendingMoves map[actor.ID]*pendingMove
+	shuttingDown bool
 	tick         uint64
 	worldTime    uint64
 	clockConfig  ClockConfig
@@ -39,6 +42,18 @@ type Service struct {
 	hub          *realtime.Hub
 	config       realtime.Config
 	store        storage.Store
+}
+
+type pendingMove struct {
+	WorldID uint64
+	ActorID actor.ID
+	FromX   int32
+	FromY   int32
+	TargetX int32
+	TargetY int32
+	ReadyAt time.Time
+	DelayMS uint64
+	Timer   *time.Timer
 }
 
 func NewService(hub *realtime.Hub, config realtime.Config) *Service {
@@ -52,6 +67,7 @@ func NewService(hub *realtime.Hub, config realtime.Config) *Service {
 		chunks:       make(map[uint64]map[world.ChunkCoord]*world.Chunk),
 		loadedWorlds: make(map[uint64]bool),
 		renderSeeds:  make(map[uint64]string),
+		pendingMoves: make(map[actor.ID]*pendingMove),
 		hub:          hub,
 		config:       config.Normalize(),
 		clockConfig:  ClockConfig{}.Normalize(),
@@ -157,6 +173,7 @@ func (s *Service) LoadChunks(worldID uint64, chunks map[world.ChunkCoord]*world.
 		copy(copied.Base, ch.Base)
 		copy(copied.Water, ch.Water)
 		copy(copied.Cover, ch.Cover)
+		copy(copied.Surface, ch.Surface)
 		copy(copied.Stock, ch.Stock)
 		copy(copied.Meta, ch.Meta)
 		copy(copied.Temperature, ch.Temperature)
@@ -236,6 +253,7 @@ type ChunkSnapshot struct {
 	Base        Uint16Layer `json:"base"`
 	Water       []uint8     `json:"water"`
 	Cover       Uint16Layer `json:"cover"`
+	Surface     Uint16Layer `json:"surface"`
 	Stock       Uint16Layer `json:"stock"`
 	Meta        []uint8     `json:"meta"`
 	Temperature []uint8     `json:"temperature"`

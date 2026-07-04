@@ -24,6 +24,14 @@ const (
 	coverKindMask  = (1 << coverKindBits) - 1
 	coverLevelMask = (1 << coverLevelBits) - 1
 	coverFlagsMask = (1 << coverFlagsBits) - 1
+
+	surfaceKindBits  = 8
+	surfaceLevelBits = 4
+	surfaceFlagsBits = 4
+
+	surfaceKindMask  = (1 << surfaceKindBits) - 1
+	surfaceLevelMask = (1 << surfaceLevelBits) - 1
+	surfaceFlagsMask = (1 << surfaceFlagsBits) - 1
 )
 
 func PackBase(biome Biome, soil Soil, elevation uint8, flags uint8) BaseCell {
@@ -89,4 +97,24 @@ func (c CoverCell) Level() uint8 {
 
 func (c CoverCell) Flags() uint8 {
 	return uint8((uint16(c) >> (coverKindBits + coverLevelBits)) & coverFlagsMask)
+}
+
+func PackSurface(kind SurfaceKind, level uint8, flags uint8) SurfaceCell {
+	return SurfaceCell(
+		(uint16(kind) & surfaceKindMask) |
+			((uint16(level) & surfaceLevelMask) << surfaceKindBits) |
+			((uint16(flags) & surfaceFlagsMask) << (surfaceKindBits + surfaceLevelBits)),
+	)
+}
+
+func (c SurfaceCell) Kind() SurfaceKind {
+	return SurfaceKind(uint16(c) & surfaceKindMask)
+}
+
+func (c SurfaceCell) Level() uint8 {
+	return uint8((uint16(c) >> surfaceKindBits) & surfaceLevelMask)
+}
+
+func (c SurfaceCell) Flags() uint8 {
+	return uint8((uint16(c) >> (surfaceKindBits + surfaceLevelBits)) & surfaceFlagsMask)
 }

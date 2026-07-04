@@ -15,6 +15,7 @@ const chunkPayloadSize = 8 + 4 + 4 +
 	world.ChunkCells +
 	world.ChunkCells*2 +
 	world.ChunkCells*2 +
+	world.ChunkCells*2 +
 	world.ChunkCells +
 	world.ChunkCells
 
@@ -35,6 +36,7 @@ func EncodeChunk(ch *world.Chunk) ([]byte, error) {
 	copy(buf[offset:], ch.Water)
 	offset += len(ch.Water)
 	offset = putUint16s(buf, offset, ch.Cover)
+	offset = putUint16s(buf, offset, ch.Surface)
 	offset = putUint16s(buf, offset, ch.Stock)
 	copy(buf[offset:], ch.Meta)
 	offset += len(ch.Meta)
@@ -60,6 +62,7 @@ func DecodeChunk(payload []byte) (*world.Chunk, error) {
 	copy(ch.Water, payload[offset:offset+world.ChunkCells])
 	offset += world.ChunkCells
 	offset = readUint16s(payload, offset, ch.Cover)
+	offset = readUint16s(payload, offset, ch.Surface)
 	offset = readUint16s(payload, offset, ch.Stock)
 	copy(ch.Meta, payload[offset:offset+world.ChunkCells])
 	offset += world.ChunkCells

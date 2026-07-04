@@ -54,9 +54,22 @@ const (
 	CoverMixedForest
 	CoverReeds
 	CoverField
-	CoverRoad
+)
+
+type SurfaceKind uint8
+
+const (
+	SurfaceNone SurfaceKind = iota
+	SurfaceTrail
+	SurfaceDirtRoad
+	SurfaceStoneRoad
+	SurfaceFence
+	SurfaceGate
+	SurfaceBridge
+	SurfacePier
 )
 
 type BaseCell uint16
 type WaterCell uint8
 type CoverCell uint16
+type SurfaceCell uint16

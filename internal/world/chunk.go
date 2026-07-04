@@ -9,6 +9,7 @@ type Chunk struct {
 	Base        []uint16
 	Water       []uint8
 	Cover       []uint16
+	Surface     []uint16
 	Stock       []uint16
 	Meta        []uint8
 	Temperature []uint8
@@ -23,6 +24,7 @@ func NewChunk(x, y int32) *Chunk {
 		Base:        make([]uint16, ChunkCells),
 		Water:       make([]uint8, ChunkCells),
 		Cover:       make([]uint16, ChunkCells),
+		Surface:     make([]uint16, ChunkCells),
 		Stock:       make([]uint16, ChunkCells),
 		Meta:        make([]uint8, ChunkCells),
 		Temperature: make([]uint8, ChunkCells),
@@ -38,6 +40,9 @@ func (c *Chunk) Validate() error {
 	}
 	if len(c.Cover) != ChunkCells {
 		return fmt.Errorf("cover length: got %d, want %d", len(c.Cover), ChunkCells)
+	}
+	if len(c.Surface) != ChunkCells {
+		return fmt.Errorf("surface length: got %d, want %d", len(c.Surface), ChunkCells)
 	}
 	if len(c.Stock) != ChunkCells {
 		return fmt.Errorf("stock length: got %d, want %d", len(c.Stock), ChunkCells)
@@ -76,6 +81,15 @@ func (c *Chunk) SetCover(index uint16, cell CoverCell) {
 
 func (c *Chunk) CoverCell(index uint16) CoverCell {
 	return CoverCell(c.Cover[index])
+}
+
+func (c *Chunk) SetSurface(index uint16, cell SurfaceCell) {
+	c.Surface[index] = uint16(cell)
+	c.Dirty = true
+}
+
+func (c *Chunk) SurfaceCell(index uint16) SurfaceCell {
+	return SurfaceCell(c.Surface[index])
 }
 
 func (c *Chunk) SetStock(index uint16, stock uint16) {

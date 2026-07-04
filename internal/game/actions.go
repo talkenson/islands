@@ -2,6 +2,7 @@ package game
 
 import (
 	"context"
+	"time"
 
 	"islands/internal/actor"
 	"islands/internal/realtime"
@@ -22,10 +23,17 @@ type ActorSnapshot struct {
 }
 
 type ActionResult struct {
-	Accepted       bool   `json:"accepted"`
-	ClientActionID string `json:"client_action_id,omitempty"`
-	ActionType     string `json:"action_type,omitempty"`
-	EventID        uint64 `json:"event_id"`
+	Accepted       bool          `json:"accepted"`
+	ClientActionID string        `json:"client_action_id,omitempty"`
+	ActionType     string        `json:"action_type,omitempty"`
+	EventID        uint64        `json:"event_id,omitempty"`
+	MoveDelayMS    uint64        `json:"move_delay_ms,omitempty"`
+	Target         *ActionTarget `json:"target,omitempty"`
+}
+
+type ActionTarget struct {
+	X int32 `json:"x"`
+	Y int32 `json:"y"`
 }
 
 type EntityPatch struct {
@@ -45,6 +53,14 @@ func (s *Service) ApplyAction(ctx context.Context, worldID, actorID uint64, req 
 		s.mu.Unlock()
 		return ActionResult{}, ErrForbidden
 	}
+	if s.shuttingDown {
+		s.mu.Unlock()
+		return ActionResult{}, ErrConflict
+	}
+	if s.pendingMoves[act.ID] != nil {
+		s.mu.Unlock()
+		return ActionResult{}, ErrConflict
+	}
 
 	switch req.ActionType {
 	case "move":
@@ -53,49 +69,43 @@ func (s *Service) ApplyAction(ctx context.Context, worldID, actorID uint64, req 
 			return ActionResult{}, ErrInvalidAction
 		}
 		targetCoord, _ := world.ToChunkCoord(req.X, req.Y)
-		if s.loadedWorlds[worldID] && s.chunkLocked(worldID, targetCoord) == nil {
+		targetChunk := s.chunkLocked(worldID, targetCoord)
+		if s.loadedWorlds[worldID] && targetChunk == nil {
 			s.mu.Unlock()
 			return ActionResult{}, ErrNotVisible
 		}
-		oldCenter, _ := world.ToChunkCoord(act.X, act.Y)
-		previousX := act.X
-		previousY := act.Y
-		previousTick := s.tick
-		act.X = req.X
-		act.Y = req.Y
-		s.tick++
-		store := s.store
-		if store != nil {
-			if err := store.SavePlayerState(ctx, s.playerStateLocked(), s.tick); err != nil {
-				act.X = previousX
-				act.Y = previousY
-				s.tick = previousTick
-				s.mu.Unlock()
-				return ActionResult{}, err
-			}
+		if targetChunk == nil {
+			targetChunk = s.ensureChunkLocked(worldID, targetCoord)
 		}
-		eventID := s.nextEventIDLocked()
-		center, _ := world.ToChunkCoord(act.X, act.Y)
-		interest := realtime.VisibleChunks(center, s.config.VisibleChunkRadius)
-		oldInterest := realtime.VisibleChunks(oldCenter, s.config.VisibleChunkRadius)
-		newChunks := interestDifference(interest, oldInterest)
-		changed := interestList(interest)
-		snapshots := s.chunkSnapshotsLocked(worldID, newChunks)
-		result := ActionResult{Accepted: true, ClientActionID: req.ClientActionID, ActionType: req.ActionType, EventID: eventID}
-		patch := EntityPatch{Actor: actorSnapshot(*act)}
+		_, targetIndex := world.ToChunkCoord(req.X, req.Y)
+		delayMS, passable := movementCostMS(targetChunk, targetIndex)
+		if !passable {
+			s.mu.Unlock()
+			return ActionResult{}, ErrConflict
+		}
+		readyAt := time.Now().Add(time.Duration(delayMS) * time.Millisecond)
+		move := &pendingMove{
+			WorldID: worldID,
+			ActorID: act.ID,
+			FromX:   act.X,
+			FromY:   act.Y,
+			TargetX: req.X,
+			TargetY: req.Y,
+			ReadyAt: readyAt,
+			DelayMS: delayMS,
+		}
+		move.Timer = time.AfterFunc(time.Duration(delayMS)*time.Millisecond, func() {
+			s.completePendingMove(context.Background(), worldID, actorID)
+		})
+		s.pendingMoves[act.ID] = move
+		result := ActionResult{
+			Accepted:       true,
+			ClientActionID: req.ClientActionID,
+			ActionType:     req.ActionType,
+			MoveDelayMS:    delayMS,
+			Target:         &ActionTarget{X: req.X, Y: req.Y},
+		}
 		s.mu.Unlock()
-		s.hub.SetActorInterest(worldID, actorID, interest)
-		s.hub.Publish(realtime.Event{ID: eventID, Type: "entity_patch", WorldID: worldID, ChangedChunks: changed, Data: patch})
-		for _, snapshot := range snapshots {
-			snapshotID := s.nextEventID()
-			s.hub.Publish(realtime.Event{
-				ID:            snapshotID,
-				Type:          "chunk_snapshot",
-				WorldID:       worldID,
-				ChangedChunks: []world.ChunkCoord{{X: snapshot.CX, Y: snapshot.CY}},
-				Data:          snapshot,
-			})
-		}
 		return result, nil
 	case "harvest":
 		coord, index := world.ToChunkCoord(act.X, act.Y)

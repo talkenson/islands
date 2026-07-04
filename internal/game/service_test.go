@@ -168,7 +168,7 @@ func TestChunkSnapshotEncodesUint16LayersAsBase64(t *testing.T) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"base", "cover", "stock"} {
+	for _, key := range []string{"base", "cover", "surface", "stock"} {
 		if _, ok := raw[key].(string); !ok {
 			t.Fatalf("%s layer should be base64 string: %s", key, data)
 		}
@@ -225,6 +225,125 @@ func TestMoveActionResultIsCompact(t *testing.T) {
 	}
 	if strings.Contains(string(data), `"world_time"`) {
 		t.Fatalf("move result should omit world_time: %s", data)
+	}
+	if result.MoveDelayMS == 0 || result.Target == nil {
+		t.Fatalf("move result timer fields: %+v", result)
+	}
+}
+
+func TestMoveStartsPendingMovement(t *testing.T) {
+	service := NewService(realtime.NewHub(), realtime.Config{VisibleChunkRadius: 1})
+	act := service.SeedDemoWorld(1)
+
+	result, err := service.ApplyAction(context.Background(), 1, 1, ActionRequest{ActionType: "move", X: act.X + 1, Y: act.Y})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.MoveDelayMS == 0 {
+		t.Fatalf("move delay should be returned")
+	}
+	current, err := service.Actor(context.Background(), 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.X != act.X || current.Y != act.Y {
+		t.Fatalf("actor moved immediately: got %d,%d want %d,%d", current.X, current.Y, act.X, act.Y)
+	}
+}
+
+func TestPendingMoveBlocksAnotherMove(t *testing.T) {
+	service := NewService(realtime.NewHub(), realtime.Config{VisibleChunkRadius: 1})
+	act := service.SeedDemoWorld(1)
+
+	if _, err := service.ApplyAction(context.Background(), 1, 1, ActionRequest{ActionType: "move", X: act.X + 1, Y: act.Y}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ApplyAction(context.Background(), 1, 1, ActionRequest{ActionType: "move", X: act.X, Y: act.Y + 1}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("second move error: got %v, want %v", err, ErrConflict)
+	}
+}
+
+func TestPendingMoveBlocksPositionActions(t *testing.T) {
+	service := NewService(realtime.NewHub(), realtime.Config{VisibleChunkRadius: 1})
+	act := service.SeedDemoWorld(1)
+
+	if _, err := service.ApplyAction(context.Background(), 1, 1, ActionRequest{ActionType: "move", X: act.X + 1, Y: act.Y}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ApplyAction(context.Background(), 1, 1, ActionRequest{ActionType: "harvest"}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("harvest during move error: got %v, want %v", err, ErrConflict)
+	}
+	if _, err := service.ApplyAction(context.Background(), 1, 1, ActionRequest{ActionType: "plant_tree"}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("plant during move error: got %v, want %v", err, ErrConflict)
+	}
+}
+
+func TestPendingMoveCompletionSurvivesPlayerSaveError(t *testing.T) {
+	hub := realtime.NewHub()
+	service := NewService(hub, realtime.Config{VisibleChunkRadius: 1})
+	service.SetStore(failingPlayerStore{err: errors.New("disk unavailable")})
+	act := service.SeedDemoWorld(1)
+	coord, _ := world.ToChunkCoord(act.X, act.Y)
+	targetCoord, targetIndex := world.ToChunkCoord(act.X+1, act.Y)
+	service.mu.Lock()
+	service.chunkLocked(1, targetCoord).Surface[targetIndex] = uint16(world.PackSurface(world.SurfaceStoneRoad, 1, 0))
+	service.mu.Unlock()
+	client := hub.Subscribe(1, 1, map[world.ChunkCoord]struct{}{coord: {}, targetCoord: {}})
+	defer hub.Unsubscribe(client.ID)
+
+	result, err := service.ApplyAction(context.Background(), 1, 1, ActionRequest{ActionType: "move", X: act.X + 1, Y: act.Y})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.MoveDelayMS == 0 {
+		t.Fatalf("move delay should be returned")
+	}
+
+	foundPatch := false
+	foundError := false
+	deadline := time.After(time.Duration(result.MoveDelayMS+500) * time.Millisecond)
+	for !foundPatch || !foundError {
+		select {
+		case event := <-client.Events:
+			if event.Type == "entity_patch" {
+				foundPatch = true
+			}
+			if event.Type == "stream_error" {
+				foundError = true
+			}
+		case <-deadline:
+			t.Fatalf("events: entity_patch=%v stream_error=%v", foundPatch, foundError)
+		}
+	}
+
+	current, err := service.Actor(context.Background(), 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.X != act.X+1 || current.Y != act.Y {
+		t.Fatalf("actor position after save error: got %d,%d want %d,%d", current.X, current.Y, act.X+1, act.Y)
+	}
+}
+
+func TestShutdownCancelsPendingMove(t *testing.T) {
+	service := NewService(realtime.NewHub(), realtime.Config{VisibleChunkRadius: 1})
+	act := service.SeedDemoWorld(1)
+
+	result, err := service.ApplyAction(context.Background(), 1, 1, ActionRequest{ActionType: "move", X: act.X + 1, Y: act.Y})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Duration(result.MoveDelayMS+50) * time.Millisecond)
+
+	current, err := service.Actor(context.Background(), 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.X != act.X || current.Y != act.Y {
+		t.Fatalf("actor moved after shutdown: got %d,%d want %d,%d", current.X, current.Y, act.X, act.Y)
 	}
 }
 
@@ -608,10 +727,16 @@ func TestMovePersistsActorThroughFileStoreRestart(t *testing.T) {
 		t.Fatalf("load service world: %v", err)
 	}
 	service.SeedDemoActor(1)
+	targetCoord, targetIndex := world.ToChunkCoord(DemoActorStartX+1, DemoActorStartY)
+	service.mu.Lock()
+	service.chunkLocked(1, targetCoord).Surface[targetIndex] = uint16(world.PackSurface(world.SurfaceStoneRoad, 1, 0))
+	service.mu.Unlock()
 
-	if _, err := service.ApplyAction(context.Background(), 1, 1, ActionRequest{ActionType: "move", X: DemoActorStartX + 1, Y: DemoActorStartY}); err != nil {
+	result, err := service.ApplyAction(context.Background(), 1, 1, ActionRequest{ActionType: "move", X: DemoActorStartX + 1, Y: DemoActorStartY})
+	if err != nil {
 		t.Fatalf("move: %v", err)
 	}
+	time.Sleep(time.Duration(result.MoveDelayMS+50) * time.Millisecond)
 
 	restarted := storage.NewFileStore(mapPath, "")
 	loaded, err := restarted.LoadWorld(context.Background())
@@ -670,4 +795,28 @@ func stackAmountFromStacks(stacks []inventory.Stack, itemID inventory.ItemID) ui
 		}
 	}
 	return 0
+}
+
+type failingPlayerStore struct {
+	err error
+}
+
+func (s failingPlayerStore) LoadWorld(ctx context.Context) (storage.WorldState, error) {
+	return storage.WorldState{}, s.err
+}
+
+func (s failingPlayerStore) SaveDirtyChunk(ctx context.Context, ch *world.Chunk, tick uint64) error {
+	return nil
+}
+
+func (s failingPlayerStore) SavePlayerState(ctx context.Context, state storage.PlayerState, tick uint64) error {
+	return s.err
+}
+
+func (s failingPlayerStore) Flush(ctx context.Context) error {
+	return nil
+}
+
+func (s failingPlayerStore) Compact(ctx context.Context, chunks map[world.ChunkCoord]*world.Chunk, tick uint64) error {
+	return nil
 }

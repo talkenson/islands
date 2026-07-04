@@ -46,8 +46,19 @@ func TestSaveLoadBinaryRoundTrip(t *testing.T) {
 		if !bytes.Equal(loadedChunk.Temperature, generatedChunk.Temperature) {
 			t.Fatalf("temperature mismatch in chunk %v", coord)
 		}
+		if !bytes.Equal(uint16Bytes(loadedChunk.Surface), uint16Bytes(generatedChunk.Surface)) {
+			t.Fatalf("surface mismatch in chunk %v", coord)
+		}
 		break
 	}
+}
+
+func uint16Bytes(values []uint16) []byte {
+	out := make([]byte, 0, len(values)*2)
+	for _, value := range values {
+		out = append(out, byte(value), byte(value>>8))
+	}
+	return out
 }
 
 func TestGenerateWorkersIsDeterministic(t *testing.T) {

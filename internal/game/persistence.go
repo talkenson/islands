@@ -11,6 +11,13 @@ import (
 
 func (s *Service) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
+	s.shuttingDown = true
+	for id, move := range s.pendingMoves {
+		if move != nil && move.Timer != nil {
+			move.Timer.Stop()
+		}
+		delete(s.pendingMoves, id)
+	}
 	store := s.store
 	state := s.playerStateLocked()
 	tick := s.tick

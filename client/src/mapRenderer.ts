@@ -32,6 +32,11 @@ const COVER_PINE_FOREST = 5;
 const COVER_MIXED_FOREST = 6;
 const COVER_FLAG_ROCK = 1;
 const COVER_FLAG_MOUNTAIN = 2;
+const SURFACE_TRAIL = 1;
+const SURFACE_DIRT_ROAD = 2;
+const SURFACE_STONE_ROAD = 3;
+const SURFACE_FENCE = 4;
+const SURFACE_GATE = 5;
 const BIOME_TEMPERATE_FOREST = 3;
 const FOG_CLEAR_TILES = CHUNK_SIZE * 0.8;
 const FOG_FULL_TILES = CHUNK_SIZE * 1.75;
@@ -496,6 +501,7 @@ export class MapRenderer {
     const base = chunk.base[index] || 0;
     const water = chunk.water[index] || 0;
     const cover = chunk.cover[index] || 0;
+    const surface = chunk.surface[index] || 0;
     const stock = chunk.stock[index] || 0;
     const soil = (base >> 5) & 15;
     const biome = base & 31;
@@ -506,10 +512,16 @@ export class MapRenderer {
     const coverKind = cover & 255;
     const coverLevel = (cover >> 8) & 15;
     const coverFlags = (cover >> 12) & 15;
+    const surfaceKind = surface & 255;
+    const surfaceLevel = (surface >> 8) & 15;
     const height =
       chunk.meta.length > index
         ? (chunk.meta[index] || 0) / 255
         : elevation / 31;
+
+    if (surfaceKind !== 0) {
+      return surfaceColor(surfaceKind, surfaceLevel, wx, wy, this.colorNoise);
+    }
 
     if (waterKind !== WATER_NONE) {
       if (waterKind === WATER_RIVER) {
@@ -699,6 +711,31 @@ function addDirtyChunkAndNeighbors(
 
 function coverDensity(stock: number): number {
   return clamp((stock - 6) / 18, 0.28, 1);
+}
+
+function surfaceColor(
+  kind: number,
+  level: number,
+  wx: number,
+  wy: number,
+  noise: ColorNoise,
+): string {
+  const n = noise.octaveNoise2D(wx * 0.28 + 31, wy * 0.28 + 17, 2, 0.55);
+  const texture = Math.round((n - 0.5) * 18 + level);
+  switch (kind) {
+    case SURFACE_TRAIL:
+      return shade("#9a8152", texture);
+    case SURFACE_DIRT_ROAD:
+      return shade("#8d7247", texture - 2);
+    case SURFACE_STONE_ROAD:
+      return shade("#8c9188", texture);
+    case SURFACE_FENCE:
+      return shade("#40342a", texture - 8);
+    case SURFACE_GATE:
+      return shade("#5a432f", texture - 4);
+    default:
+      return shade("#8b8879", texture);
+  }
 }
 
 function shade(hex: string, amount: number): string {
